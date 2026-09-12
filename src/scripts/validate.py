@@ -118,7 +118,7 @@ def main() -> None:
             text_feats = F.normalize(text_feats, dim=-1)
             all_query_feats.append(text_feats.cpu())
 
-            if args.dataset != "circo" and args.split != "test1":
+            if args.dataset != "circo" and "target_name" in batch:
                 target_indices.extend(id_to_pos[name] for name in batch["target_name"])
             if args.dataset == "circo":
                 gt_lists.extend(
@@ -134,10 +134,14 @@ def main() -> None:
               "see docs/DATASETS.md for the exact collate function used in the paper's evaluation server.")
         results = mean_average_precision_at_k(similarity, gt_lists, [5, 10, 25, 50])
         print({f"mAP@{k}": v for k, v in results.items()})
-    else:
+    elif target_indices:
         k_values = [10, 50] if args.dataset == "fashioniq" else [1, 5, 10, 50]
         results = recall_at_k(similarity, torch.tensor(target_indices), k_values)
         print({f"R@{k}": v for k, v in results.items()})
+    else:
+        print(f"Split '{args.split}' has no public ground truth for {args.dataset}; "
+              "query features were computed but no Recall@K can be reported locally "
+              "(submit predictions to the dataset's official evaluation server instead).")
 
 
 if __name__ == "__main__":
