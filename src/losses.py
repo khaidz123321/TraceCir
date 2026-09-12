@@ -30,26 +30,31 @@ def distillation_contrastive_loss(
     v_pred = F.normalize(v_pred, dim=-1)
     v_target = F.normalize(v_target, dim=-1)
 
-    logits_pred_target = v_pred @ v_target.t() / temperature  # (B, B)
+    # logits_target_pred[i, j] = cos(target_i, pred_j) / tau
+    logits_target_pred = v_target @ v_pred.t() / temperature
+    # logits_pred_target[i, j] = cos(pred_i, target_j) / tau  (== logits_target_pred.T)
+    logits_pred_target = v_pred @ v_target.t() / temperature
     logits_pred_pred = v_pred @ v_pred.t() / temperature
     logits_target_target = v_target @ v_target.t() / temperature
-    logits_target_pred = v_target @ v_pred.t() / temperature
 
     batch_size = v_pred.shape[0]
     labels = torch.arange(batch_size, device=v_pred.device)
     eye = torch.eye(batch_size, dtype=torch.bool, device=v_pred.device)
 
-    # For "predicted as anchor": positives are pred<->target on the diagonal,
-    # negatives are all target rows plus the other predicted rows (off-diag).
     neg_pred = logits_pred_pred.masked_fill(eye, float("-inf"))
-    logits_a = torch.cat([logits_pred_target, neg_pred], dim=1)
-    loss_a = F.cross_entropy(logits_a, labels)
-
     neg_target = logits_target_target.masked_fill(eye, float("-inf"))
-    logits_b = torch.cat([logits_target_pred, neg_target], dim=1)
-    loss_b = F.cross_entropy(logits_b, labels)
 
-    return loss_a + loss_b
+    # First term of Eq. (4): anchor = target_k, positive = pred_k,
+    # negatives = {pred_j}_{j != k} (pred-vs-pred, off-diagonal).
+    logits_first = torch.cat([logits_target_pred, neg_pred], dim=1)
+    loss_first = F.cross_entropy(logits_first, labels)
+
+    # Second term of Eq. (4): anchor = pred_k, positive = target_k,
+    # negatives = {target_j}_{j != k} (target-vs-target, off-diagonal).
+    logits_second = torch.cat([logits_pred_target, neg_target], dim=1)
+    loss_second = F.cross_entropy(logits_second, labels)
+
+    return loss_first + loss_second
 
 
 def oti_loss(
