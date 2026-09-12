@@ -200,10 +200,15 @@ class CIRRDataset(Dataset):
         self.image_names = list(self.name_to_relpath.keys())
 
     def _image_path(self, image_name: str) -> Path:
+        # image_splits/split.rc2.*.json maps a name to a path like
+        # "./test1/xxx.png" or "./train/34/xxx.png", relative to the
+        # official dataset's img_raw/ folder (see the CIRR repo's own
+        # README "Dataset File Structure" section) -- not directly under
+        # data_root/cirr/.
         relpath = self.name_to_relpath[image_name]
         if relpath.startswith("./"):
             relpath = relpath[2:]
-        return self.data_root / relpath
+        return self.data_root / "cirr" / "img_raw" / relpath
 
     def __len__(self) -> int:
         return len(self.triplets) if self.mode == "relative" else len(self.image_names)

@@ -30,14 +30,40 @@ script trong `src/scripts/` yêu cầu.
 
 ## 3. CIRR
 
-- Xin quyền truy cập / tải tại https://github.com/Cuberick-Orion/CIRR
-- Cấu trúc thư mục cần có:
-  ```
-  data/CIRR/
-      train/, dev/, test1/                       (thư mục ảnh, giữ nguyên như bản gốc)
-      cirr/captions/cap.rc2.{train,val,test1}.json
-      cirr/image_splits/split.rc2.{train,val,test1}.json
-  ```
+Theo README chính thức tại https://github.com/Cuberick-Orion/CIRR, dữ liệu có 2 phần tách biệt: **annotation** (tải tự do) và **ảnh gốc** (cần xin quyền qua NLVR2).
+
+### 3.1. Annotation (không cần xin quyền)
+
+```bash
+mkdir -p data/CIRR
+cd data/CIRR
+git clone -b cirr_dataset https://github.com/Cuberick-Orion/CIRR.git cirr
+```
+
+### 3.2. Ảnh gốc (cần xin quyền — ảnh gốc thuộc về NLVR2, không phải CIRR)
+
+1. Điền Google Form đồng ý điều khoản của nhóm NLVR2, hướng dẫn tại:
+   https://github.com/lil-lab/nlvr/tree/master/nlvr2#direct-image-download
+2. Nếu nhóm NLVR2 không phản hồi, email tác giả CIRR (zheyuan.david.liu@outlook.com)
+   và nêu rõ bạn đã điền form của NLVR2 đồng ý điều khoản của họ.
+3. Sau khi nhận được ảnh, đặt vào đúng cấu trúc `img_raw/` bên dưới.
+
+**Không cần** tải `img_feat_res152/` hay `img_feat_frcnn/` (pre-extracted features) — code này tự trích đặc trưng bằng CLIP, không dùng ResNet152/F-RCNN.
+
+### Cấu trúc thư mục cần có
+
+```
+data/CIRR/
+    cirr/
+        captions/cap.rc2.{train,val,test1}.json
+        image_splits/split.rc2.{train,val,test1}.json
+        img_raw/
+            train/<0-99>/<image>.png     (thư mục con kế thừa từ NLVR2, không mang ý nghĩa gì đặc biệt)
+            dev/<image>.png
+            test1/<image>.png
+```
+
+`--data-root` truyền cho `scripts/validate.py`/dataset loader trỏ vào `data/CIRR` (thư mục cha chứa `cirr/`).
 
 ## 4. CIRCO (do chính bài báo này đề xuất)
 
