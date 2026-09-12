@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import random
 from pathlib import Path
 
 import torch
@@ -24,10 +23,10 @@ from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from .concepts import load_gpt_phrases
+from .concepts import load_gpt_phrases, sample_gpt_pair
 from .data.datasets import OTIDistillationDataset
 from .losses import cosine_loss, distillation_contrastive_loss, phi_loss
-from .models.clip_utils import build_oti_prompt, encode_with_pseudo_tokens, get_placeholder_token_id, load_clip
+from .models.clip_utils import encode_with_pseudo_tokens, get_placeholder_token_id, load_clip, tokenize
 from .models.phi import Phi
 from .seed import set_seed
 
@@ -38,7 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--oti-targets-path", type=str, required=True)
     parser.add_argument("--gpt-phrases-path", type=str, required=True)
     parser.add_argument("--concepts-path", type=str, required=True,
-                         help="JSON mapping image_name -> list[str] concepts (from concepts.assign_concepts).")
+                         help="concepts.json produced by scripts/run_oti.py (image_name -> list[str] concepts).")
     parser.add_argument("--output-dir", type=str, required=True)
     parser.add_argument("--clip-model-name", type=str, default="ViT-B/32")
     parser.add_argument("--batch-size", type=int, default=256)
@@ -67,6 +66,10 @@ def main() -> None:
     loader = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=True,
         num_workers=args.num_workers, drop_last=True, pin_memory=True,
+        # Keep worker processes (and the dataset's pickled filesystem index,
+        # ~100K entries for ImageNet1K) alive across epochs instead of
+        # respawning + re-pickling them every epoch (100 epochs by default).
+        persistent_workers=args.num_workers > 0,
     )
 
     with open(args.concepts_path, "r", encoding="utf-8") as f:
@@ -95,15 +98,7 @@ def main() -> None:
 
             l_distil = distillation_contrastive_loss(v_pred, v_target, temperature=args.temperature)
 
-            gpt_texts, gpt_star_texts = [], []
-            for name in names:
-                concept = random.choice(concepts[name])
-                phrase_pool = gpt_phrases.get(concept, [f"a photo of {concept}"])
-                phrase = random.choice(phrase_pool)
-                gpt_texts.append(phrase)
-                gpt_star_texts.append(phrase.replace(concept, "$", 1))
-
-            from .models.clip_utils import tokenize
+            gpt_texts, gpt_star_texts = sample_gpt_pair(names, concepts, gpt_phrases)
 
             gpt_tokens = tokenize(gpt_texts).to(device)
             with torch.no_grad():

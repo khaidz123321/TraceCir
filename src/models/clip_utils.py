@@ -106,5 +106,15 @@ def build_oti_prompt(template: str = "a photo of {}") -> str:
 
 
 def build_cir_prompt(relative_caption: str) -> str:
-    """Template used at CIR inference time: "a photo of S* that <caption>"."""
-    return f"a photo of {PSEUDO_TOKEN} that {relative_caption}"
+    """Template used at CIR inference time: "a photo of S* that <caption>".
+
+    Real dataset captions occasionally contain a literal "$" (e.g. a price
+    mention: "it looks $ 10 cheaper"). Since PSEUDO_TOKEN=="$" is what
+    `encode_with_pseudo_tokens` uses to locate the single pseudo-word
+    position, an un-escaped "$" in the caption would create a second
+    occurrence and trip its "exactly once" check. Replace any literal
+    placeholder characters in the caption with a plain word first so only
+    the one we insert remains.
+    """
+    safe_caption = relative_caption.replace(PSEUDO_TOKEN, "dollar")
+    return f"a photo of {PSEUDO_TOKEN} that {safe_caption}"

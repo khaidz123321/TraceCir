@@ -21,6 +21,7 @@ import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
 
+from .concepts import sample_gpt_pair
 from .losses import cosine_loss, oti_loss
 from .models.clip_utils import (
     OTI_TEMPLATES,
@@ -85,13 +86,7 @@ def run_oti_for_batch(
         text_features = F.normalize(text_features, dim=-1)
         l_cos = cosine_loss(image_features, text_features)
 
-        gpt_texts, gpt_star_texts = [], []
-        for name in image_names:
-            concept = random.choice(concepts[name])
-            phrase_pool = gpt_phrases.get(concept, [f"a photo of {concept}"])
-            phrase = random.choice(phrase_pool)
-            gpt_texts.append(phrase)
-            gpt_star_texts.append(phrase.replace(concept, "$", 1))
+        gpt_texts, gpt_star_texts = sample_gpt_pair(image_names, concepts, gpt_phrases)
 
         gpt_tokens = tokenize(gpt_texts).to(device)
         with torch.no_grad():

@@ -41,13 +41,17 @@ docs/
 1. **Chuẩn bị dữ liệu** — xem [docs/DATASETS.md](docs/DATASETS.md). Không
    bộ dữ liệu nào trong số này có thể tự động tải về (đều cần đăng ký/xin
    quyền thủ công).
-2. **Tầng 1 — OTI** (tạo ra các "nhãn giả" pseudo-word, chạy 1 lần, khá chậm):
+2. **Tầng 1 — OTI** (tạo ra các "nhãn giả" pseudo-word, chạy 1 lần, khá chậm).
+   Bước này cũng lưu luôn `concepts.json` (gán concept cho từng ảnh) — file
+   này Tầng 2 cần dùng lại, vì cả 2 tầng phải lấy mẫu concept/GPT-phrase
+   cho đúng cùng một tập ảnh:
    ```bash
    python -m src.scripts.run_oti \
        --image-dir data/ImageNet1K/test \
        --vocab-path data/open_images_v7_classes.txt \
        --gpt-phrases-path data/gpt_phrases.jsonl \
        --output-path data/oti_targets.pt \
+       --concepts-output-path data/concepts.json \
        --clip-model-name ViT-B/32
    ```
 3. **Tầng 2 — huấn luyện Phi** (distillation, Mục 3.2):

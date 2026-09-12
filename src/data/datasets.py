@@ -33,6 +33,40 @@ def _pil_loader(path: Path) -> Image.Image:
         return img.convert("RGB")
 
 
+def scan_image_dir(root: str | Path, extensions=(".jpg", ".jpeg", ".png")) -> dict[str, Path]:
+    """Recursively scan `root` for images and return a deterministic
+    filename-stem -> Path mapping, shared by every dataset that needs to
+    resolve an "image name" to a file (`UnlabeledImageFolder`,
+    `OTIDistillationDataset`).
+
+    Using one shared, sorted implementation (rather than each dataset doing
+    its own independent `rglob`) guarantees that two datasets built from the
+    same directory agree on which physical file a given name resolves to.
+    Raises if two files share a stem: silently letting one overwrite the
+    other in the returned dict would let `run_oti.py` compute a pseudo-word
+    target for one physical image while `OTIDistillationDataset` later feeds
+    Phi a *different* image under the same name, corrupting distillation
+    with no visible error.
+    """
+    root = Path(root)
+    mapping: dict[str, Path] = {}
+    for path in sorted(root.rglob("*")):
+        if path.suffix.lower() not in extensions:
+            continue
+        if path.stem in mapping:
+            raise ValueError(
+                f"Duplicate image stem '{path.stem}' found at both "
+                f"{mapping[path.stem]} and {path}. Every image under {root} "
+                "must have a unique filename (ignoring extension), since "
+                "images are identified by stem throughout this pipeline "
+                "(concept assignment, OTI targets, Phi distillation)."
+            )
+        mapping[path.stem] = path
+    if not mapping:
+        raise FileNotFoundError(f"No images found under {root}")
+    return mapping
+
+
 class UnlabeledImageFolder(Dataset):
     """Flat folder of images with no annotations, used to pre-train
     OTI / Phi (the paper uses the 100K images of ImageNet1K's test split)."""
@@ -40,19 +74,16 @@ class UnlabeledImageFolder(Dataset):
     def __init__(self, root: str | Path, preprocess: Callable, extensions=(".jpg", ".jpeg", ".png")):
         self.root = Path(root)
         self.preprocess = preprocess
-        self.paths = sorted(
-            p for p in self.root.rglob("*") if p.suffix.lower() in extensions
-        )
-        if not self.paths:
-            raise FileNotFoundError(f"No images found under {self.root}")
+        name_to_path = scan_image_dir(self.root, extensions)
+        self.names = sorted(name_to_path)
+        self.paths = [name_to_path[name] for name in self.names]
 
     def __len__(self) -> int:
         return len(self.paths)
 
     def __getitem__(self, idx: int):
-        path = self.paths[idx]
-        image = self.preprocess(_pil_loader(path))
-        return {"image": image, "image_name": path.stem}
+        image = self.preprocess(_pil_loader(self.paths[idx]))
+        return {"image": image, "image_name": self.names[idx]}
 
 
 class OTIDistillationDataset(Dataset):
@@ -74,10 +105,7 @@ class OTIDistillationDataset(Dataset):
         self.image_names: list[str] = cache["image_names"]
         self.targets = cache["targets"]  # (N, d_w)
 
-        self._name_to_path: dict[str, Path] = {}
-        for ext in (".jpg", ".jpeg", ".png"):
-            for p in self.image_dir.rglob(f"*{ext}"):
-                self._name_to_path[p.stem] = p
+        self._name_to_path = scan_image_dir(self.image_dir)
 
     def __len__(self) -> int:
         return len(self.image_names)
@@ -172,7 +200,10 @@ class CIRRDataset(Dataset):
         self.image_names = list(self.name_to_relpath.keys())
 
     def _image_path(self, image_name: str) -> Path:
-        return self.data_root / self.name_to_relpath[image_name].lstrip("./")
+        relpath = self.name_to_relpath[image_name]
+        if relpath.startswith("./"):
+            relpath = relpath[2:]
+        return self.data_root / relpath
 
     def __len__(self) -> int:
         return len(self.triplets) if self.mode == "relative" else len(self.image_names)

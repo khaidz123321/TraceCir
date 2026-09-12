@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from ..data.datasets import CIRCODataset, CIRRDataset, FashionIQDataset
-from ..eval import mean_average_precision_at_k, recall_at_k
+from ..eval import mean_average_precision_at_k, recall_at_k, recall_subset_at_k
 from ..models.clip_utils import build_cir_prompt, encode_with_pseudo_tokens, get_placeholder_token_id, load_clip, tokenize
 from ..models.phi import Phi
 from ..seed import set_seed
@@ -102,6 +102,7 @@ def main() -> None:
 
     all_query_feats = []
     target_indices = []
+    member_indices: list[list[int]] = []
     gt_lists: list[list[int]] = []
 
     with torch.no_grad():
@@ -123,24 +124,39 @@ def main() -> None:
 
             if args.dataset != "circo" and "target_name" in batch:
                 target_indices.extend(id_to_pos[name] for name in batch["target_name"])
-            if args.dataset == "circo":
-                gt_lists.extend(
-                    [id_to_pos[i] for i in gts if i in id_to_pos]
-                    for gts in batch["gt_img_ids"]
+            if args.dataset == "cirr" and "member_set" in batch:
+                member_indices.extend(
+                    [id_to_pos[name] for name in members] for members in batch["member_set"]
                 )
+            if args.dataset == "circo":
+                for gts in batch["gt_img_ids"]:
+                    resolved = [id_to_pos[i] for i in gts if i in id_to_pos]
+                    dropped = len(gts) - len(resolved)
+                    if dropped:
+                        print(f"Warning: {dropped}/{len(gts)} gt_img_ids for a CIRCO query "
+                              "were not found in the local index (incomplete download or "
+                              "id/extension mismatch) and were excluded from mAP.")
+                    gt_lists.append(resolved)
 
     query_features = torch.cat(all_query_feats, dim=0)
     similarity = query_features @ index_features.t()
 
     if args.dataset == "circo":
-        print("Note: CIRCO ground-truth batching for mAP needs per-sample gt_img_ids; "
-              "see docs/DATASETS.md for the exact collate function used in the paper's evaluation server.")
-        results = mean_average_precision_at_k(similarity, gt_lists, [5, 10, 25, 50])
-        print({f"mAP@{k}": v for k, v in results.items()})
+        if not any(gt_lists):
+            print(f"Split '{args.split}' has no public ground truth for CIRCO; "
+                  "query features were computed but no mAP@K can be reported locally "
+                  "(submit predictions to https://circo.micc.unifi.it/ instead).")
+        else:
+            results = mean_average_precision_at_k(similarity, gt_lists, [5, 10, 25, 50])
+            print({f"mAP@{k}": v for k, v in results.items()})
     elif target_indices:
         k_values = [10, 50] if args.dataset == "fashioniq" else [1, 5, 10, 50]
-        results = recall_at_k(similarity, torch.tensor(target_indices), k_values)
+        target_tensor = torch.tensor(target_indices)
+        results = recall_at_k(similarity, target_tensor, k_values)
         print({f"R@{k}": v for k, v in results.items()})
+        if args.dataset == "cirr" and member_indices:
+            subset_results = recall_subset_at_k(similarity, target_tensor, member_indices, [1, 2, 3])
+            print({f"R_subset@{k}": v for k, v in subset_results.items()})
     else:
         print(f"Split '{args.split}' has no public ground truth for {args.dataset}; "
               "query features were computed but no Recall@K can be reported locally "
