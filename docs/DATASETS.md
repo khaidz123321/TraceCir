@@ -1,25 +1,26 @@
-# Dataset setup
+# Thiết lập dữ liệu
 
-None of the datasets used by the paper can be auto-downloaded (they require
-manual agreement / registration steps), so this documents exactly what to
-fetch and where to place it. All paths below are what `src/data/datasets.py`
-and the scripts under `src/scripts/` expect.
+Không có bộ dữ liệu nào ở đây tự động tải về được (đều cần bước đăng ký /
+xin quyền thủ công), nên tài liệu này ghi rõ chính xác cần tải gì và đặt ở
+đâu. Toàn bộ đường dẫn bên dưới là những gì `src/data/datasets.py` và các
+script trong `src/scripts/` yêu cầu.
 
-## 1. Pre-training set (for OTI + Phi): ImageNet1K test split
+## 1. Tập dữ liệu pre-training (dùng cho OTI + Phi): ImageNet1K test split
 
-- Source: https://image-net.org/download.php (registration required).
-- The paper uses the **unlabeled test split** (100K images) of ILSVRC2012.
-- Place the images (flat or nested, they are found recursively) under:
+- Nguồn: https://image-net.org/download.php (cần đăng ký tài khoản).
+- Bài báo dùng **tập test không nhãn** (100K ảnh) của ILSVRC2012.
+- Đặt ảnh (dạng phẳng hoặc lồng thư mục đều được, code sẽ tự quét đệ quy)
+  vào:
   ```
   data/ImageNet1K/test/
   ```
 
 ## 2. FashionIQ
 
-- Images: follow instructions at https://github.com/XiaoxiaoGuo/fashion-iq
-  (images are hosted externally; the repo provides a download script/URLs).
-- Annotations (captions + splits): https://github.com/XiaoxiaoGuo/fashion-iq
-- Expected layout:
+- Ảnh: làm theo hướng dẫn tại https://github.com/XiaoxiaoGuo/fashion-iq
+  (ảnh được host ở nơi khác; repo này cung cấp script/link tải).
+- Annotation (câu mô tả + chia tập): https://github.com/XiaoxiaoGuo/fashion-iq
+- Cấu trúc thư mục cần có:
   ```
   data/FashionIQ/
       captions/cap.{dress,shirt,toptee}.{train,val,test}.json
@@ -29,43 +30,44 @@ and the scripts under `src/scripts/` expect.
 
 ## 3. CIRR
 
-- Request access / download from https://github.com/Cuberick-Orion/CIRR
-- Expected layout:
+- Xin quyền truy cập / tải tại https://github.com/Cuberick-Orion/CIRR
+- Cấu trúc thư mục cần có:
   ```
   data/CIRR/
-      train/, dev/, test1/                       (image folders, as shipped)
+      train/, dev/, test1/                       (thư mục ảnh, giữ nguyên như bản gốc)
       cirr/captions/cap.rc2.{train,val,test1}.json
       cirr/image_splits/split.rc2.{train,val,test1}.json
   ```
 
-## 4. CIRCO (proposed by this paper)
+## 4. CIRCO (do chính bài báo này đề xuất)
 
-- Annotations + instructions: https://github.com/miccunifi/CIRCO
-- Images: COCO 2017 **unlabeled** split, https://cocodataset.org/#download
-  (`unlabeled2017.zip`).
-- Expected layout:
+- Annotation + hướng dẫn: https://github.com/miccunifi/CIRCO
+- Ảnh: tập COCO 2017 **unlabeled**, https://cocodataset.org/#download
+  (file `unlabeled2017.zip`).
+- Cấu trúc thư mục cần có:
   ```
   data/CIRCO/
       annotations/{val,test}.json
       COCO2017_unlabeled/unlabeled2017/*.jpg
   ```
-- The official CIRCO test-set ground truths are withheld; submit predictions
-  to https://circo.micc.unifi.it/ to get test-set metrics (see paper Sec. 4).
+- Nhãn ground truth của tập test CIRCO không được công bố công khai; cần
+  nộp kết quả dự đoán lên https://circo.micc.unifi.it/ để lấy số liệu trên
+  tập test (xem Mục 4 của bài báo).
 
-## 5. Open Images V7 concept vocabulary (for OTI / Phi's GPT regularization)
+## 5. Từ vựng concept Open Images V7 (dùng cho loss GPT-regularization của OTI/Phi)
 
-- Class names: export the `DisplayName` column of the official
-  class-descriptions CSV from
+- Tên các lớp (class name): xuất cột `DisplayName` từ file CSV
+  class-descriptions chính thức tại
   https://storage.googleapis.com/openimages/web/download_v7.html
-  ("Boxes" > "Class Names") into a plain text file, one class per line:
+  (mục "Boxes" > "Class Names") ra một file text thuần, mỗi lớp 1 dòng:
   ```
   data/open_images_v7_classes.txt
   ```
 
-## 6. Pre-generated GPT-Neo phrases
+## 6. Các phrase GPT-Neo được sinh sẵn (pre-generated)
 
-- Run once, offline (see Appendix A — ~12h on a single A100 for the full
-  ~20,932-class vocabulary):
+- Chạy 1 lần duy nhất, offline (xem Phụ lục A — mất khoảng 12 giờ trên 1
+  GPU A100 cho toàn bộ từ vựng ~20.932 lớp):
   ```bash
   python -c "
   from src.concepts import load_open_images_vocab, pregenerate_gpt_phrases
@@ -73,6 +75,6 @@ and the scripts under `src/scripts/` expect.
   pregenerate_gpt_phrases(vocab, 'data/gpt_phrases.jsonl')
   "
   ```
-- For a quick smoke test, generate phrases for a small vocab subset first
-  (e.g. the first 50 lines of the class list) to validate the pipeline
-  before committing to the full run.
+- Để kiểm tra nhanh (smoke test), hãy sinh phrase cho một tập con nhỏ của
+  từ vựng trước (ví dụ 50 dòng đầu của danh sách lớp) để xác nhận pipeline
+  chạy đúng trước khi chạy toàn bộ.
