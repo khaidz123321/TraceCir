@@ -20,6 +20,7 @@ from ..data.datasets import CIRCODataset, CIRRDataset, FashionIQDataset
 from ..eval import mean_average_precision_at_k, recall_at_k
 from ..models.clip_utils import build_cir_prompt, encode_with_pseudo_tokens, get_placeholder_token_id, load_clip, tokenize
 from ..models.phi import Phi
+from ..seed import set_seed
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,6 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--num-workers", type=int, default=8)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 
 
@@ -49,6 +51,7 @@ def extract_index_features(clip_model, loader, device, id_key: str):
 
 def main() -> None:
     args = parse_args()
+    set_seed(args.seed)
     device = torch.device(args.device)
 
     clip_model, preprocess = load_clip(args.clip_model_name, device)

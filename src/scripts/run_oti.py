@@ -24,6 +24,7 @@ from ..concepts import assign_concepts, embed_vocab, load_gpt_phrases, load_open
 from ..data.datasets import UnlabeledImageFolder
 from ..models.clip_utils import get_placeholder_token_id, load_clip
 from ..oti import OTIConfig, run_oti_for_batch
+from ..seed import set_seed
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,11 +40,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=2e-2)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    set_seed(args.seed)
     device = torch.device(args.device)
 
     clip_model, preprocess = load_clip(args.clip_model_name, device)
