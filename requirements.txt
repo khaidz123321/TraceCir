@@ -1,5 +1,10 @@
 torch>=1.13.0
 torchvision>=0.14.0
+open_clip_torch>=3.3.0
+transformers>=4.49.0
+qwen-vl-utils
+accelerate
+bitsandbytes
 ftfy
 regex
 tqdm
@@ -7,6 +12,3 @@ Pillow
 numpy
 pandas
 scikit-learn
-git+https://github.com/openai/CLIP.git
-transformers>=4.24.0
-comet-ml>=3.33.6 ; extra == "logging"

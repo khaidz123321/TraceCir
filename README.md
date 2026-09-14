@@ -1,108 +1,88 @@
-# Dựng lại baseline SEARLE
+# P0: TRACE-CIR — Source-Grounded Local Transition Matching
 
-Bản tái hiện (reproduction) baseline của bài báo **"Zero-Shot Composed Image
-Retrieval with Textual Inversion"** (Baldrati, Agnolucci, Bertini, Del Bimbo
-— ICCV 2023, [arXiv:2303.15247](https://arxiv.org/abs/2303.15247)), được
-xây dựng lại từ đầu dựa theo các công thức và kiến trúc trong bài báo, có
-đối chiếu với cấu trúc repo chính thức
-([miccunifi/SEARLE](https://github.com/miccunifi/SEARLE)) để bám sát quy
-ước về thư mục/tham số dòng lệnh (CLI).
+Thực nghiệm P0 theo đúng giao thức trong `P0_TRACE_CIR_Experimental_QKhai.docx`:
+kiểm chứng 3 giả thuyết (H1/H2/H3) của phương pháp mới **TRACE-CIR**, xây
+dựng trên nền **TAPR** ("Atomic Edit Factorization for Training-Free
+Composed Image Retrieval") — không train, dùng OpenCLIP đóng băng + 1
+compiler đa phương thức (Qwen2.5-VL-7B-Instruct) để phân rã câu lệnh chỉnh
+sửa thành các atom ADD/REMOVE/PRESERVE/REPLACE.
 
-Phương pháp của bài báo (**SEARLE**) biến bài toán Composed Image Retrieval
-(ảnh + câu mô tả tương đối -> ảnh đích) thành bài toán quen thuộc là
-text-to-image retrieval, bằng cách ánh xạ ảnh tham chiếu thành một token
-"từ giả" (pseudo-word) rồi chèn token này vào câu mô tả trước khi đưa qua
-bộ mã hóa văn bản (text tower) của CLIP.
+> **Lưu ý:** Repo này trước đó dựng baseline cho bài **SEARLE** (Zero-Shot
+> Composed Image Retrieval with Textual Inversion, arXiv:2303.15247). Công
+> việc đó đã **tạm dừng** để tập trung vào P0 — lịch sử code vẫn còn trong
+> git log nếu cần dùng lại (ví dụ để so sánh trong phần liên quan của báo
+> cáo/paper), nhưng không phải trọng tâm hiện tại.
 
 ## Cấu trúc thư mục
 
 ```
 src/
   models/
-    phi.py          Mạng Textual Inversion Network (Bảng 5): MLP 3 lớp
-    clip_utils.py   Load CLIP + encode_with_pseudo_tokens (chèn token vào chuỗi)
+    openclip_utils.py   Load OpenCLIP ViT-L/14 + trích global/local vector (Eq. 3 TAPR)
   data/
-    datasets.py     Dataset loader cho FashionIQ / CIRR / CIRCO / ảnh không nhãn
-  losses.py         L_cos, L_gpt, L_distil (Eq. 1, 2, 4)
-  concepts.py       Gán concept bằng CLIP zero-shot + cache phrase từ GPT-Neo
-  oti.py            Tầng 1: Optimization-based Textual Inversion (Mục 3.1)
-  train_phi.py      Tầng 2: distill nhãn giả OTI sang mạng Phi (Mục 3.2)
-  baselines.py      Baseline không cần train: Image-only / Text-only / Image+Text
-  eval.py           Recall@K, mAP@K (Eq. 6)
-  scripts/
-    run_oti.py      CLI: chạy tầng 1 trên toàn bộ tập ảnh pre-training
-    validate.py     CLI: tầng 3, suy luận + đánh giá zero-shot CIR
-docs/
-  DATASETS.md       Hướng dẫn lấy FashionIQ / CIRR / CIRCO / ImageNet / từ vựng concept
+    datasets.py          CIRRDataset, CIRCODataset (annotation + ảnh)
+  p0/
+    scoring.py            E0: chấm điểm kiểu TAPR (Eq. 6-10) — Target/Add/Preserve/Remove
+    compiler.py            Transition Compiler: Qwen2.5-VL-7B -> {target, atoms[]}
+    feature_cache.py       Trích + cache đặc trưng global/local dùng chung cho E0-E4
+    run_e0.py               CLI: chạy E0 trên CIRCO/CIRR validation, ra Recall@K/mAP@K
+  eval.py                  Recall@K, RecallSubset@K, mAP@K (dùng lại được cho cả P0)
+  seed.py                  Cố định random seed
 ```
 
-## Quy trình (Pipeline)
+## Quy trình chạy E0 (baseline TAPR)
 
-1. **Chuẩn bị dữ liệu** — xem [docs/DATASETS.md](docs/DATASETS.md). Không
-   bộ dữ liệu nào trong số này có thể tự động tải về (đều cần đăng ký/xin
-   quyền thủ công).
-2. **Tầng 1 — OTI** (tạo ra các "nhãn giả" pseudo-word, chạy 1 lần, khá chậm).
-   Bước này cũng lưu luôn `concepts.json` (gán concept cho từng ảnh) — file
-   này Tầng 2 cần dùng lại, vì cả 2 tầng phải lấy mẫu concept/GPT-phrase
-   cho đúng cùng một tập ảnh:
-   ```bash
-   python -m src.scripts.run_oti \
-       --image-dir data/ImageNet1K/test \
-       --vocab-path data/open_images_v7_classes.txt \
-       --gpt-phrases-path data/gpt_phrases.jsonl \
-       --output-path data/oti_targets.pt \
-       --concepts-output-path data/concepts.json \
-       --clip-model-name ViT-B/32
+1. **Cache đặc trưng** cho toàn bộ ảnh trong tập classic/index (CIRCO hoặc CIRR):
+   ```python
+   from src.models.openclip_utils import load_openclip
+   from src.data.datasets import CIRCODataset
+   from src.p0.feature_cache import build_feature_cache
+
+   model, preprocess, _ = load_openclip(device="cuda")
+   ds = CIRCODataset("data/CIRCO", "val", "classic", preprocess)
+   build_feature_cache(model, ds, "features/circo", id_key="image_id", device="cuda")
    ```
-3. **Tầng 2 — huấn luyện Phi** (distillation, Mục 3.2):
-   ```bash
-   python -m src.train_phi \
-       --image-dir data/ImageNet1K/test \
-       --oti-targets-path data/oti_targets.pt \
-       --gpt-phrases-path data/gpt_phrases.jsonl \
-       --concepts-path data/concepts.json \
-       --output-dir checkpoints/phi_b32 \
-       --clip-model-name ViT-B/32
+2. **Chạy Transition Compiler** trên tập query (relative split) — cần GPU đủ mạnh
+   (khuyến nghị Kaggle, không chạy được trên máy không GPU):
+   ```python
+   from src.p0.compiler import load_compiler, run_compiler_batch
+   model, processor = load_compiler()
+   run_compiler_batch(model, processor, queries, "data/circo_compiled.jsonl")
    ```
-4. **Tầng 3 — đánh giá zero-shot CIR**:
+3. **Audit thủ công** (bắt buộc, mục 5.3 giao thức): kiểm tra ~100 CIRCO + ~100 CIRR
+   output của compiler, gán nhãn Correct/Partially/Incorrect. Nếu tỉ lệ Correct
+   < ~85%, sửa lại prompt trước khi chạy full.
+4. **Chạy E0**:
    ```bash
-   python -m src.scripts.validate \
-       --dataset cirr --split val --data-root data/CIRR \
-       --phi-checkpoint checkpoints/phi_b32/phi_final.pt \
-       --clip-model-name ViT-B/32
+   python -m src.p0.run_e0 \
+       --dataset circo --split val --data-root data/CIRCO \
+       --feature-cache-dir features/circo \
+       --compiled-queries-path data/circo_compiled.jsonl
    ```
 
-## Siêu tham số tham khảo (Phụ lục A của bài báo)
+## Trạng thái dữ liệu
 
-| Tầng | Thiết lập | Giá trị |
-|---|---|---|
-| OTI | số bước lặp | 350 |
-| OTI | learning rate | 2e-2 |
-| OTI | lambda_cos / lambda_gpt | 1.0 / 0.5 |
-| OTI | hệ số EMA | 0.99 |
-| OTI | số concept mỗi ảnh (k) | 15 |
-| Phi | số epoch (B/32, L/14) | 100, 50 |
-| Phi | learning rate | 1e-4 |
-| Phi | batch size | 256 |
-| Phi | lambda_distil / lambda_gpt | 1.0 / 0.75 |
-| Phi | nhiệt độ (temperature) distillation | 0.25 |
-| Phi | số concept mỗi ảnh (k) | 150 |
-| Cả hai | optimizer | AdamW, weight decay 0.01 |
+| Bộ dữ liệu | Trạng thái |
+|---|---|
+| CIRCO (annotation + 123,403 ảnh COCO) | ✅ Đầy đủ |
+| CIRR validation | ⏳ Chờ NLVR2 duyệt |
 
-## Ghi chú về phạm vi / trạng thái hiện tại
+## Đã kiểm chứng (chưa chạy được compiler thật vì môi trường dev không có GPU)
 
-Đây là bản **tái hiện baseline dựng lại từ đầu**, không phải codebase chính
-thức. Một số điểm đơn giản hóa cần lưu ý trước khi tin tưởng hoàn toàn vào
-các con số so với Bảng 1-3 của bài báo:
+- OpenCLIP ViT-L/14 load + trích global (768-d, L2-norm=1) + local (64×768-d,
+  L2-norm=1) đúng công thức, test trên ảnh CIRCO thật.
+- Công thức chấm điểm E0 (`scoring.py`) phản ứng đúng hướng: thêm bằng chứng
+  Add → điểm tăng; thêm bằng chứng Remove → điểm giảm; ảnh giống hệt tham
+  chiếu → điểm Preserve (continuity) tối đa.
+- Toàn bộ pipeline cache → scoring → eval chạy end-to-end không lỗi trên
+  subset ảnh CIRCO thật (compiler được giả lập bằng output mẫu).
+- **Chưa kiểm chứng**: compiler thật (Qwen2.5-VL-7B) — cần chạy trên máy có
+  GPU (dự kiến Kaggle) trước khi tin tưởng số liệu E0 cuối cùng.
 
-- `oti.py` xử lý theo batch và dùng chung 1 lượt chọn ngẫu nhiên
-  template/GPT-phrase cho mỗi bước tối ưu trên cả batch, thay vì lịch trình
-  chính xác theo từng ảnh riêng lẻ như repo chính thức; hành vi hội tụ có
-  thể khác đôi chút so với số liệu báo cáo trong bài.
-- Phần đánh giá mAP cho CIRCO trong `scripts/validate.py` cần ánh xạ
-  `gt_img_ids` của từng câu truy vấn sang vị trí trong tập index; bạn cần
-  nối logic này khớp với định dạng annotation CIRCO thực tế của mình trước
-  khi tin vào số liệu mAP (xem ghi chú được in ra khi chạy script và
-  `docs/DATASETS.md`).
-- Chưa bao gồm định dạng nộp bài (submission) cho evaluation server của
-  tập test CIRCO; xem https://circo.micc.unifi.it/ để biết thêm.
+## Khoảng trống cần lưu ý
+
+- Bài báo TAPR không công bố giá trị mặc định cụ thể cho trọng số
+  θ_T/θ_A/θ_P/θ_R (Eq. 10) trong phần văn bản trích xuất được — `E0Weights`
+  hiện dùng trọng số bằng nhau (1.0 mỗi cái) làm mặc định tạm thời, cần coi
+  đây là siêu tham số cần tinh chỉnh/báo cáo riêng, không phải số liệu gốc
+  từ bài báo.
