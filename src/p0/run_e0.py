@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 
+import numpy as np
 import torch
 from tqdm import tqdm
 
@@ -110,8 +111,11 @@ def main() -> None:
 
         scores = torch.empty(len(cache))
         for row in range(len(cache)):
-            cand_global = cache.global_features[row].to(device)
-            cand_local = cache.local_features[row].to(device)
+            # global_features / local_features are disk-backed np.memmap
+            # arrays (see feature_cache.FeatureCache) -- copy the one row
+            # we need into a real in-memory tensor before moving to device.
+            cand_global = torch.from_numpy(np.asarray(cache.global_features[row])).float().to(device)
+            cand_local = torch.from_numpy(np.asarray(cache.local_features[row])).float().to(device)
             scores[row] = e0_score(
                 target_vec, add_probes, preserve_probes, remove_probes,
                 reference_local, cand_global, cand_local, weights,
