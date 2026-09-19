@@ -26,7 +26,7 @@ import torch
 from tqdm import tqdm
 
 from ..data.datasets import CIRCODataset, CIRRDataset
-from ..eval import mean_average_precision_at_k, recall_at_k, recall_subset_at_k
+from ..eval import average_precision_per_query, mean_average_precision_at_k, recall_at_k, recall_subset_at_k
 from ..models.openclip_utils import encode_text, load_openclip
 from ..seed import set_seed
 from .compiler import load_compiled_queries
@@ -48,6 +48,8 @@ def parse_args() -> argparse.Namespace:
                         help="Candidate images scored per GPU step (lower it if you run out of GPU memory).")
     parser.add_argument("--keep-reference", action="store_true",
                         help="Do not remove the reference image from the ranking (default: remove it).")
+    parser.add_argument("--per-query-out", type=str, default=None,
+                        help="CIRCO: save per-query AP@5/10/25/50 (.npz) for paired comparisons.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     return parser.parse_args()
@@ -171,6 +173,13 @@ def main() -> None:
     if args.dataset == "circo":
         results = mean_average_precision_at_k(similarity, gt_lists, [5, 10, 25, 50])
         print({f"E0 mAP@{k}": v for k, v in results.items()})
+        if args.per_query_out:
+            import numpy as np
+
+            ranking = similarity.argsort(dim=-1, descending=True)
+            np.savez(args.per_query_out, **{
+                f"ap{k}": np.array(average_precision_per_query(ranking, gt_lists, k)) for k in (5, 10, 25, 50)
+            })
     else:
         results = recall_at_k(similarity, torch.tensor(target_indices), [1, 5, 10, 50])
         print({f"E0 R@{k}": v for k, v in results.items()})

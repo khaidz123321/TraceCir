@@ -54,6 +54,25 @@ def recall_subset_at_k(
     return results
 
 
+def average_precision_per_query(
+    ranking: torch.Tensor, ground_truth: list[list[int]], k: int
+) -> list[float]:
+    """AP@K of every query (Eq. 6 before averaging), on a (Q, N) ranking of
+    index positions, best first. Used for paired comparisons between methods."""
+    aps = []
+    for query_idx, gt in enumerate(ground_truth):
+        gt_set = set(gt)
+        num_gt = max(len(gt_set), 1)
+        relevant_hits = 0
+        precision_sum = 0.0
+        for rank, idx in enumerate(ranking[query_idx, :k].tolist(), start=1):
+            if idx in gt_set:
+                relevant_hits += 1
+                precision_sum += relevant_hits / rank
+        aps.append(precision_sum / min(k, num_gt))
+    return aps
+
+
 def mean_average_precision_at_k(
     similarity: torch.Tensor, ground_truth: list[list[int]], k_values: list[int]
 ) -> dict[int, float]:
@@ -69,17 +88,6 @@ def mean_average_precision_at_k(
     ranking = similarity.argsort(dim=-1, descending=True).cpu()
     results: dict[int, float] = {}
     for k in k_values:
-        aps = []
-        for query_idx, gt in enumerate(ground_truth):
-            gt_set = set(gt)
-            num_gt = max(len(gt_set), 1)
-            topk = ranking[query_idx, :k].tolist()
-            relevant_hits = 0
-            precision_sum = 0.0
-            for rank, idx in enumerate(topk, start=1):
-                if idx in gt_set:
-                    relevant_hits += 1
-                    precision_sum += relevant_hits / rank
-            aps.append(precision_sum / min(k, num_gt))
+        aps = average_precision_per_query(ranking, ground_truth, k)
         results[k] = sum(aps) / len(aps) * 100
     return results
