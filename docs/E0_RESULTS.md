@@ -43,3 +43,35 @@ mAP@5 by query group (groups overlap; from the 27B atoms): with PRESERVE (n = 96
 Likely reason (a hypothesis, not tested): E0's Preserve uses the reference image's local features
 (continuity), E1 by definition uses only the text of the source phrase, so E1 has no visual
 evidence from the reference. That is what E2 (source grounding) adds back.
+
+# E2 — E1 + source-grounded source state (protocol Sec. 7, 9.2), CIRCO val
+
+REMOVE = M(z-, I_r) - M(z-, I_c); PRESERVE = M(z-, I_c); ADD and REPLACE as in E1 (Sec. 9.2 lists only
+REMOVE and PRESERVE). z- = sum_k alpha_k v_k^r, alpha = softmax(u-^T v_k^r / tau_g), tau_g = 0.02, raw
+(not normalised) as the protocol writes it. Same 27B compiled queries.
+
+| | mAP@5 | mAP@10 | mAP@25 | mAP@50 |
+|---|---|---|---|---|
+| E0 | 26.49 | 28.12 | 30.18 | 31.04 |
+| E1 | 24.51 | 25.61 | 27.79 | 28.64 |
+| **E2, tau_g = 0.02** | 25.18 | 26.33 | 28.48 | 29.25 |
+| E2, tau_g = 0.01 | 25.10 | 26.27 | 28.42 | 29.22 |
+| E2, tau_g = 0.04 | 25.16 | 26.39 | 28.52 | 29.31 |
+| E2, L2-normalised z- (not in protocol) | 25.26 | 26.37 | 28.50 | 29.30 |
+
+Paired per-query AP (bootstrap 10 000): E2 - E1: mAP@5 +0.67 [-0.02, +1.45]; mAP@10 +0.72 [+0.09, +1.45]
+(E2 better on 20 queries, worse on 11, equal on 189). E2 - E0: mAP@5 -1.31 [-4.09, +1.40]; mAP@10 -1.79
+[-4.23, +0.61]. So: a small, borderline gain of grounding over text-only source evidence; still not above E0.
+
+Queries with PRESERVE (n = 96), mAP@5: E0 29.06, E1 23.85, E2 25.43.
+
+**Grounding is poorly localised** (docs/figures/grounding_heatmaps_e2.png; 189 REMOVE/PRESERVE phrases):
+mean max alpha 0.178 at tau_g = 0.02 (uniform = 0.016), effective number of patches ~23 of 64, and 47%
+of the alpha mass on the outer ring of the 8x8 grid (44% if uniform). The heatmaps often light up
+background or image borders rather than the named object, so z- is close to an average of many patches.
+Consistent with E2 ~ E1. Also: CLIP's 224 centre crop hides content at the sides of wide images (e.g. the
+query 15 person is cropped out), for reference and gallery alike.
+
+Note on E3: sum-of-deltas adds only per-query constants (M(u+, I_r), M(z-, I_r)), which do not change the
+ranking, so E3 ranks like E2 with z- also used for REPLACE. The relative-vs-absolute distinction can only
+matter through E4's SoftMin.
