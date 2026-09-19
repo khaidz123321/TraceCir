@@ -44,7 +44,10 @@ COMPILER_PROMPT_PROTOCOL_VERBATIM = (
 
 # Used prompt: the verbatim prompt plus (a) the operation definitions from the
 # protocol's operation table, (b) the output schema and example from Sec. 5.1,
-# and (c) rules 9-14. Additions only; rules 1-8 are unchanged. This is the
+# and (c) rules 9-20 (15-20 added after the manual pre-audit of 100 CIRCO-val
+# outputs, which showed: target describing the reference image instead of the
+# edited one, "same ..." not becoming PRESERVE, negation not becoming REMOVE,
+# invented values for "different ...", vague sources, reversed verbs). Additions only; rules 1-8 are unchanged. This is the
 # "improve the prompt/schema" step Sec. 5.3 allows, and it must be reported as
 # a deviation from the verbatim Sec. 5.2 prompt.
 # Rules 11-14 came from a 10-query smoke test (first 10 CIRCO-val queries):
@@ -81,6 +84,18 @@ COMPILER_PROMPT = (
     "the reference image's current value as source_state "
     '(for example REPLACE "shot from the side" -> "shot from above").\n'
     "14. Describe only what the reference image shows or the instruction states. Do not invent objects.\n"
+    '15. "target" describes the image AFTER the change: start from what the reference image shows, apply every '
+    "change in the instruction, and never restate anything the instruction removes or replaces.\n"
+    '16. If the instruction says something stays the same ("same", "keep", "still", "unchanged", "as before"), '
+    "output a PRESERVE atom for it. Do not turn it into REPLACE or ADD.\n"
+    '17. If the instruction says something is absent ("no X", "without X", "not X"), output REMOVE for X when the '
+    'reference image shows X. Never write "no X" or "without X" as a target_state.\n'
+    '18. If the instruction only says "different", "another" or "other" without naming a value, do not choose a '
+    'specific value: write target_state as "different <attribute>" (for example "different colour").\n'
+    "19. source_state must name what the reference image actually shows, in concrete visual words. "
+    'Never write vague sources such as "current view" or "current colour".\n'
+    "20. Read verbs literally: an instruction that says something is happening (for example 'are eating') "
+    "means it must appear in the target image, never be removed.\n"
     "Output format: one JSON object with exactly two keys.\n"
     '"target": one sentence describing the complete desired image after the change.\n'
     '"atoms": the list of atoms.\n'
@@ -89,7 +104,8 @@ COMPILER_PROMPT = (
     '  "target": "a blue shirt without a logo",\n'
     '  "atoms": [\n'
     '    {"operation": "REPLACE", "source_state": "red shirt", "target_state": "blue shirt"},\n'
-    '    {"operation": "REMOVE", "source_state": "white logo", "target_state": null}\n'
+    '    {"operation": "REMOVE", "source_state": "white logo", "target_state": null},\n'
+    '    {"operation": "PRESERVE", "source_state": "shirt shape", "target_state": null}\n'
     "  ]\n"
     "}"
 )
