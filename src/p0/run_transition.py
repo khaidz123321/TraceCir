@@ -2,7 +2,8 @@
 """P0 E1-E4 (protocol Sec. 9): TRACE-CIR transition scoring on CIRCO and/or
 CIRR validation, on the same feature cache and compiled queries as E0.
 
-E1 = absolute transition matching (H1 vs E0); E2 = E1 + source-grounded source state (Sec. 7, 9.2).
+E1 = absolute transition matching (H1 vs E0); E2 = E1 + source-grounded source state (Sec. 7, 9.2);
+E3 = E2 + local transition delta (Sec. 9.3); E4 = E3 + coupled REPLACE via SoftMin (Sec. 9.4).
 
 Example:
     python -m src.p0.run_transition --variant e1 \
@@ -31,9 +32,16 @@ from ..seed import set_seed
 from .compiler import TransitionSpec, load_compiled_queries
 from .feature_cache import FeatureCache
 from .run_e0 import _query_id
-from .scoring_transition import TransitionQuery, e1_score_batched, e2_score_batched, ground_query
+from .scoring_transition import (
+    TransitionQuery,
+    e1_score_batched,
+    e2_score_batched,
+    e3_score_batched,
+    e4_score_batched,
+    ground_query,
+)
 
-VARIANTS = {"e1": e1_score_batched, "e2": e2_score_batched}
+VARIANTS = {"e1": e1_score_batched, "e2": e2_score_batched, "e3": e3_score_batched, "e4": e4_score_batched}
 
 
 def parse_args() -> argparse.Namespace:
@@ -49,6 +57,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lambda-edit", type=float, default=0.5, help="Sec. 10 default 0.5; grid 0.25/0.5/1.0.")
     parser.add_argument("--tau-m", type=float, default=0.02, help="Sec. 8 default 0.02.")
     parser.add_argument("--tau-g", type=float, default=0.02, help="Sec. 7 grounding temperature; grid 0.01/0.02/0.04.")
+    parser.add_argument("--beta", type=float, default=10.0, help="E4 SoftMin sharpness (Sec. 9.4); grid 5/10/20.")
     parser.add_argument("--normalize-prototype", action="store_true",
                         help="L2-normalise the grounded prototypes z- (not asked for by the protocol).")
     parser.add_argument("--chunk-size", type=int, default=2048)
@@ -156,10 +165,10 @@ def main() -> None:
           f"(missing required field) | mean atoms/query {np.mean(atom_counts):.2f} | "
           f"queries without atoms {sum(1 for n in atom_counts if n == 0)}", flush=True)
 
-    similarity = compute_similarity(
-        VARIANTS[args.variant], queries, cache, device, args.chunk_size,
-        lambda_edit=args.lambda_edit, tau_m=args.tau_m,
-    )
+    score_kwargs = {"lambda_edit": args.lambda_edit, "tau_m": args.tau_m}
+    if args.variant == "e4":
+        score_kwargs["beta"] = args.beta
+    similarity = compute_similarity(VARIANTS[args.variant], queries, cache, device, args.chunk_size, **score_kwargs)
     if not args.keep_reference:
         similarity[torch.arange(len(reference_rows)), torch.tensor(reference_rows)] = float("-inf")
 

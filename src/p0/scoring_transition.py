@@ -1,8 +1,9 @@
 """TRACE-CIR transition scoring for P0 (protocol Sec. 8-10).
 
-Implemented so far: E1 (Sec. 9.1, absolute transition matching) and E2 (Sec. 7
-and 9.2, source-grounded source state). E3-E4 (local delta, coupled REPLACE)
-build on the same primitives and the same query record.
+Implemented: E1 (Sec. 9.1, absolute transition matching), E2 (Sec. 7 and 9.2,
+source-grounded source state), E3 (Sec. 9.3, local transition delta for REPLACE)
+and E4 (Sec. 9.4, coupled REPLACE via SoftMin), all on the same primitives and
+the same query record.
 
 Everything E1-E4 share follows the protocol: one local matcher
 
@@ -51,6 +52,7 @@ class TransitionQuery:
     reference_local: torch.Tensor | None = None
     remove_z: torch.Tensor | None = None
     preserve_z: torch.Tensor | None = None
+    replace_z: torch.Tensor | None = None
 
     @property
     def num_atoms(self) -> int:
@@ -139,13 +141,15 @@ def ground_source(
 
 
 def ground_query(query: TransitionQuery, tau_g: float = 0.02, normalize: bool = False) -> TransitionQuery:
-    """Fill `remove_z` / `preserve_z` of a query that has `reference_local`."""
+    """Fill `remove_z` / `preserve_z` / `replace_z` of a query that has `reference_local`."""
     if query.reference_local is None:
         raise ValueError("ground_query needs query.reference_local")
     if query.remove_minus is not None:
         query.remove_z = ground_source(query.remove_minus, query.reference_local, tau_g, normalize)
     if query.preserve_minus is not None:
         query.preserve_z = ground_source(query.preserve_minus, query.reference_local, tau_g, normalize)
+    if query.replace_minus is not None:
+        query.replace_z = ground_source(query.replace_minus, query.reference_local, tau_g, normalize)
     return query
 
 
@@ -184,4 +188,92 @@ def e2_score_batched(
         gain = local_match_batched(query.replace_plus, candidate_local, tau_m)
         lose = local_match_batched(query.replace_minus, candidate_local, tau_m)
         edit = edit + (gain - lose).sum(dim=0)
+    return score + lambda_edit * edit / num_atoms
+
+
+def softmin(x: torch.Tensor, y: torch.Tensor, beta: float) -> torch.Tensor:
+    """SoftMin_beta(x, y) = -(1/beta) log(exp(-beta x) + exp(-beta y)) (Sec. 9.4)."""
+    return -torch.logsumexp(-beta * torch.stack([x, y]), dim=0) / beta
+
+
+def _replace_deltas(
+    query: TransitionQuery, candidate_local: torch.Tensor, tau_m: float
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sec. 9.3 for the REPLACE atoms of a grounded query, each (n, N):
+
+        delta+ = M(u+, I_c) - M(u+, I_r)     desired-state gain
+        delta- = M(z-, I_r) - M(z-, I_c)     source-state disappearance
+    """
+    reference = query.reference_local.unsqueeze(0)
+    gain = local_match_batched(query.replace_plus, candidate_local, tau_m) - local_match_batched(
+        query.replace_plus, reference, tau_m
+    )
+    loss = local_match_batched(query.replace_z, reference, tau_m) - local_match_batched(
+        query.replace_z, candidate_local, tau_m
+    )
+    return gain, loss
+
+
+def _e2_non_replace_terms(query: TransitionQuery, candidate_local: torch.Tensor, tau_m: float) -> torch.Tensor:
+    """ADD / REMOVE / PRESERVE contributions, identical in E2, E3 and E4."""
+    edit = torch.zeros(candidate_local.shape[0], device=candidate_local.device)
+    if query.add_plus is not None:
+        edit = edit + local_match_batched(query.add_plus, candidate_local, tau_m).sum(dim=0)
+    if query.remove_z is not None:
+        at_reference = local_match_batched(query.remove_z, query.reference_local.unsqueeze(0), tau_m)
+        edit = edit + (at_reference - local_match_batched(query.remove_z, candidate_local, tau_m)).sum(dim=0)
+    if query.preserve_z is not None:
+        edit = edit + local_match_batched(query.preserve_z, candidate_local, tau_m).sum(dim=0)
+    return edit
+
+
+def e3_score_batched(
+    query: TransitionQuery,
+    candidate_global: torch.Tensor,
+    candidate_local: torch.Tensor,
+    lambda_edit: float = 0.5,
+    tau_m: float = 0.02,
+) -> torch.Tensor:
+    """E3 (Sec. 9.3): E2 with REPLACE scored as the local transition delta
+
+        Phi_REPLACE^sum = delta+ + delta-.
+
+    ADD, REMOVE and PRESERVE are as in E2 (Sec. 9.3 defines only REPLACE).
+    Note that delta+ and delta- differ from absolute matching only by
+    per-query constants, which never change a ranking.
+    """
+    score = candidate_global @ query.target
+    num_atoms = query.num_atoms
+    if num_atoms == 0:
+        return score
+    edit = _e2_non_replace_terms(query, candidate_local, tau_m)
+    if query.replace_plus is not None:
+        gain, loss = _replace_deltas(query, candidate_local, tau_m)
+        edit = edit + (gain + loss).sum(dim=0)
+    return score + lambda_edit * edit / num_atoms
+
+
+def e4_score_batched(
+    query: TransitionQuery,
+    candidate_global: torch.Tensor,
+    candidate_local: torch.Tensor,
+    lambda_edit: float = 0.5,
+    tau_m: float = 0.02,
+    beta: float = 10.0,
+) -> torch.Tensor:
+    """E4 (Sec. 9.4, full P0): E3 with REPLACE coupled non-compensatorily,
+
+        Phi_REPLACE^coupled = SoftMin_beta(delta+, delta-),
+
+    so a candidate that satisfies only one side of a replacement is not
+    rewarded. Everything else is as in E3.
+    """
+    score = candidate_global @ query.target
+    num_atoms = query.num_atoms
+    if num_atoms == 0:
+        return score
+    edit = _e2_non_replace_terms(query, candidate_local, tau_m)
+    if query.replace_plus is not None:
+        gain, loss = _replace_deltas(query, candidate_local, tau_m)
+        edit = edit + softmin(gain, loss, beta).sum(dim=0)
     return score + lambda_edit * edit / num_atoms
