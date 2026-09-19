@@ -75,3 +75,40 @@ query 15 person is cropped out), for reference and gallery alike.
 Note on E3: sum-of-deltas adds only per-query constants (M(u+, I_r), M(z-, I_r)), which do not change the
 ranking, so E3 ranks like E2 with z- also used for REPLACE. The relative-vs-absolute distinction can only
 matter through E4's SoftMin.
+
+# E3 and E4 (protocol Sec. 9.3-9.4), CIRCO val
+
+E3: REPLACE = delta+ + delta-, delta+ = M(u+, I_c) - M(u+, I_r), delta- = M(z-, I_r) - M(z-, I_c); other atoms as E2.
+E4: REPLACE = SoftMin_beta(delta+, delta-), beta = 10; other atoms as E2. lambda_edit = 0.5, tau_m = tau_g = 0.02.
+
+| | mAP@5 | mAP@10 | mAP@25 | mAP@50 |
+|---|---|---|---|---|
+| E0 | **26.49** | **28.12** | **30.18** | **31.04** |
+| E1 | 24.51 | 25.61 | 27.79 | 28.64 |
+| E2 | 25.18 | 26.33 | 28.48 | 29.25 |
+| E3 | 23.34 | 25.05 | 27.04 | 27.74 |
+| **E4 (beta = 10)** | 25.36 | 26.70 | 28.91 | 29.66 |
+
+E4 sensitivity (mAP@5 / mAP@10): beta 5: 24.40 / 25.92; beta 10: 25.36 / 26.70; beta 20: 25.57 / 26.90.
+lambda_edit 0.25: 23.82 / 25.37; 1.0: 25.24 / 26.51. tau_g 0.01: 25.37 / 26.73; 0.04: 25.17 / 26.64.
+(beta = 10 and lambda_edit = 0.5 are the protocol defaults and the reported setting; the grid is reported, not selected from.)
+
+Paired per-query AP (bootstrap 10 000; difference, 95% CI):
+
+| Comparison | mAP@5 | mAP@10 |
+|---|---|---|
+| E4 - E3 (coupled vs summed REPLACE) | +2.02 [+0.79, +3.46] | +1.65 [+0.50, +2.99] |
+| E3 - E2 (z- instead of text u- for REPLACE) | -1.84 [-3.25, -0.53] | -1.28 [-2.53, -0.19] |
+| E4 - E2 | +0.18 [-0.68, +1.12] | +0.37 [-0.41, +1.22] |
+| E4 - E1 | +0.85 [-0.18, +1.97] | +1.10 [+0.12, +2.13] |
+| E4 - E0 | -1.13 [-4.17, +1.88] | -1.42 [-4.17, +1.26] |
+
+mAP@5 by query group (overlapping; groups from the 27B atoms), E0 / E1 / E2 / E3 / E4:
+REPLACE-only (n = 49) 31.55 / 32.33 / 32.33 / 25.61 / 33.24; >= 2 REPLACE (n = 64) 29.74 / 28.61 / 29.37 / 25.55 / 30.11;
+no REPLACE (n = 39) 25.53 / 21.70 / 21.64 / 21.64 / 21.64; with PRESERVE (n = 96) 29.06 / 23.85 / 25.43 / 25.31 / 24.82;
+COMPOUND (>= 2 non-PRESERVE atoms, n = 144) 25.47 / 25.01 / 25.30 / 23.48 / 26.01.
+
+Reading: coupling REPLACE (E4) clearly beats summing it (E3); E3 is worse than E2 because grounding the REPLACE
+source (diffuse z-) is worse than its text. E4 is at or slightly above E1/E2 and still below E0 overall, but the
+E0-E4 gap is not significant. E4 is ahead of E0 on REPLACE-only queries (+1.7, n = 49, not tested) and behind on
+queries without REPLACE (-3.9, n = 39), where E0's reference-continuity term has no counterpart in E1-E4.
