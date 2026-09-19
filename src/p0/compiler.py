@@ -44,9 +44,14 @@ COMPILER_PROMPT_PROTOCOL_VERBATIM = (
 
 # Used prompt: the verbatim prompt plus (a) the operation definitions from the
 # protocol's operation table, (b) the output schema and example from Sec. 5.1,
-# and (c) rules 9-10. Additions only; rules 1-8 are unchanged. This is the
+# and (c) rules 9-14. Additions only; rules 1-8 are unchanged. This is the
 # "improve the prompt/schema" step Sec. 5.3 allows, and it must be reported as
 # a deviation from the verbatim Sec. 5.2 prompt.
+# Rules 11-14 came from a 10-query smoke test (first 10 CIRCO-val queries):
+# source/target swapped, ADD phrase put in source_state, viewpoint/zoom changes
+# dropped, invented objects. The prompt is tuned against decomposition
+# correctness (manual audit) only, never against retrieval metrics, and must be
+# frozen before E0-E4 are run.
 COMPILER_PROMPT = (
     "You are given a reference image and a modification instruction.\n"
     "Decompose the requested visual change into atomic transition operations.\n"
@@ -69,6 +74,13 @@ COMPILER_PROMPT = (
     "9. If something in the reference image is swapped for something else, output one REPLACE atom, "
     "not a separate REMOVE and ADD.\n"
     "10. Set every field that an operation does not use to null.\n"
+    "11. The modification instruction describes the TARGET image. source_state is what the reference image "
+    "shows; target_state is what the target image must show. Never swap them.\n"
+    "12. For ADD, put the phrase in target_state and set source_state to null.\n"
+    "13. Changes of viewpoint, zoom, camera angle, colour mode or style are also atoms: use REPLACE with "
+    "the reference image's current value as source_state "
+    '(for example REPLACE "shot from the side" -> "shot from above").\n'
+    "14. Describe only what the reference image shows or the instruction states. Do not invent objects.\n"
     "Output format: one JSON object with exactly two keys.\n"
     '"target": one sentence describing the complete desired image after the change.\n'
     '"atoms": the list of atoms.\n'
