@@ -118,3 +118,57 @@ def e0_score(
     total_abs_weight = sum(abs(w) for w, _ in active_terms)
     score = sum((w / total_abs_weight) * phi for w, phi in active_terms)
     return score
+
+
+def local_interaction_batched(probes: torch.Tensor, candidates: torch.Tensor, tau: float = 0.02) -> torch.Tensor:
+    """`local_interaction` for many candidates at once.
+
+    Args:
+        probes: (n, d) unit probe vectors.
+        candidates: (N, M, d) unit local visual vectors of N candidates.
+
+    Returns:
+        (N,) tensor; element k equals `local_interaction(probes, candidates[k], tau)`.
+    """
+    sims = torch.einsum("nd,kmd->knm", probes, candidates)  # (N, n, M)
+    weights = F.softmax(sims / tau, dim=-1)
+    return (weights * sims).sum(dim=-1).mean(dim=-1)
+
+
+def e0_score_batched(
+    target_text_vec: torch.Tensor,
+    add_probes: torch.Tensor | None,
+    preserve_probes: torch.Tensor | None,
+    remove_probes: torch.Tensor | None,
+    reference_local: torch.Tensor,
+    candidate_global: torch.Tensor,
+    candidate_local: torch.Tensor,
+    weights: E0Weights = E0Weights(),
+) -> torch.Tensor:
+    """Vectorized `e0_score`: scores N candidates for one query in one pass.
+
+    Same math and same active-factor renormalization as `e0_score`, but
+    `candidate_global` is (N, d) and `candidate_local` is (N, M, d), and the
+    result is an (N,) tensor. This exists because scoring every candidate in
+    a Python loop (queries x 123K images) is orders of magnitude too slow.
+    """
+    tau = weights.tau_local
+
+    active_terms: list[tuple[float, torch.Tensor]] = [(weights.target, candidate_global @ target_text_vec)]
+
+    if add_probes is not None and add_probes.numel() > 0:
+        active_terms.append((weights.add, local_interaction_batched(add_probes, candidate_local, tau)))
+
+    continuity = local_interaction_batched(reference_local, candidate_local, tau)
+    if preserve_probes is not None and preserve_probes.numel() > 0:
+        textual = local_interaction_batched(preserve_probes, candidate_local, tau)
+        phi_p = 0.5 * textual + 0.5 * continuity
+    else:
+        phi_p = continuity
+    active_terms.append((weights.preserve, phi_p))
+
+    if remove_probes is not None and remove_probes.numel() > 0:
+        active_terms.append((-weights.remove, local_interaction_batched(remove_probes, candidate_local, tau)))
+
+    total_abs_weight = sum(abs(w) for w, _ in active_terms)
+    return sum((w / total_abs_weight) * phi for w, phi in active_terms)

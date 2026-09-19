@@ -30,7 +30,7 @@ from ..eval import mean_average_precision_at_k, recall_at_k, recall_subset_at_k
 from ..models.openclip_utils import encode_text, load_openclip
 from ..seed import set_seed
 from .compiler import load_compiled_queries
-from .scoring import E0Weights, e0_score
+from .scoring import E0Weights, e0_score_batched
 from .feature_cache import FeatureCache
 
 
@@ -44,6 +44,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--openclip-model-name", type=str, default="ViT-L-14")
     parser.add_argument("--openclip-pretrained", type=str, default="laion2b_s32b_b82k")
     parser.add_argument("--tau-local", type=float, default=0.02)
+    parser.add_argument("--chunk-size", type=int, default=2048,
+                        help="Candidate images scored per GPU step (lower it if you run out of GPU memory).")
+    parser.add_argument("--keep-reference", action="store_true",
+                        help="Do not remove the reference image from the ranking (default: remove it).")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     return parser.parse_args()
@@ -53,6 +57,42 @@ def _query_id(dataset: str, item: dict) -> str:
     if dataset == "circo":
         return str(item["reference_img_id"])
     return item["reference_name"] + "|" + str(item["pair_id"])
+
+
+def compute_similarity(
+    queries: list[dict],
+    cache: FeatureCache,
+    weights: E0Weights,
+    device: torch.device,
+    chunk_size: int = 2048,
+) -> torch.Tensor:
+    """Score every query against every cached candidate image.
+
+    The loop is candidate-chunk OUTER, query INNER: each chunk of the
+    (disk-backed, ~11GB) local-feature cache is read from disk once and
+    scored against all queries, instead of re-reading the whole cache once
+    per query.
+
+    Args:
+        queries: per query, a dict with tensors on `device`: "target" (d,),
+            "add"/"preserve"/"remove" ((n, d) or None), "reference_local" (M, d).
+
+    Returns:
+        (Q, N) float tensor on CPU of retrieval scores.
+    """
+    n_candidates = len(cache)
+    similarity = torch.empty(len(queries), n_candidates, device=device)
+
+    for start in tqdm(range(0, n_candidates, chunk_size), desc="E0 scoring (candidate chunks)"):
+        end = min(start + chunk_size, n_candidates)
+        cand_global = torch.from_numpy(np.asarray(cache.global_features[start:end])).float().to(device)
+        cand_local = torch.from_numpy(np.asarray(cache.local_features[start:end])).float().to(device)
+        for qi, q in enumerate(queries):
+            similarity[qi, start:end] = e0_score_batched(
+                q["target"], q["add"], q["preserve"], q["remove"],
+                q["reference_local"], cand_global, cand_local, weights,
+            )
+    return similarity.cpu()
 
 
 def main() -> None:
@@ -81,56 +121,48 @@ def main() -> None:
 
     weights = E0Weights(tau_local=args.tau_local)
 
-    similarity_rows: list[torch.Tensor] = []
+    queries: list[dict] = []
+    reference_rows: list[int] = []
     target_indices: list[int] = []
     gt_lists: list[list[int]] = []
     member_indices: list[list[int]] = []
 
-    for item in tqdm(query_ds, desc=f"E0 scoring ({args.dataset} {args.split})"):
-        query_id = _query_id(args.dataset, item)
-        spec = compiled.get(query_id)
+    for item in tqdm(query_ds, desc="Encoding queries"):
+        spec = compiled.get(_query_id(args.dataset, item))
+        use_spec = spec is not None and spec.parse_ok
 
-        with torch.no_grad():
-            target_vec = encode_text(model, tokenizer, [spec.target if spec and spec.parse_ok else item["relative_caption"]], device)[0]
-
-        reference_id = item["reference_img_id"] if args.dataset == "circo" else item["reference_name"]
-        reference_local = cache.local_vectors(reference_id).to(device)
-
-        def probe_vecs(operation: str, field: str) -> torch.Tensor | None:
-            if spec is None:
+        def probes(operation: str, field: str) -> torch.Tensor | None:
+            if not use_spec:
                 return None
             phrases = [getattr(a, field) for a in spec.atoms_by_operation(operation) if getattr(a, field)]
-            if not phrases:
-                return None
-            with torch.no_grad():
-                return encode_text(model, tokenizer, phrases, device)
+            return encode_text(model, tokenizer, phrases, device) if phrases else None
 
-        add_probes = probe_vecs("ADD", "target_state")
-        preserve_probes = probe_vecs("PRESERVE", "source_state")
-        remove_probes = probe_vecs("REMOVE", "source_state")
+        target_text = spec.target if use_spec else item["relative_caption"]
+        reference_id = item["reference_img_id"] if args.dataset == "circo" else item["reference_name"]
 
-        scores = torch.empty(len(cache))
-        for row in range(len(cache)):
-            # global_features / local_features are disk-backed np.memmap
-            # arrays (see feature_cache.FeatureCache) -- copy the one row
-            # we need into a real in-memory tensor before moving to device.
-            cand_global = torch.from_numpy(np.asarray(cache.global_features[row])).float().to(device)
-            cand_local = torch.from_numpy(np.asarray(cache.local_features[row])).float().to(device)
-            scores[row] = e0_score(
-                target_vec, add_probes, preserve_probes, remove_probes,
-                reference_local, cand_global, cand_local, weights,
-            )
-        similarity_rows.append(scores)
+        queries.append({
+            "target": encode_text(model, tokenizer, [target_text], device)[0],
+            "add": probes("ADD", "target_state"),
+            "preserve": probes("PRESERVE", "source_state"),
+            "remove": probes("REMOVE", "source_state"),
+            "reference_local": cache.local_vectors(reference_id).to(device),
+        })
+        reference_rows.append(cache.row_index(reference_id))
 
         if args.dataset == "circo":
-            gts = [cache.row_index(i) for i in item["gt_img_ids"] if i in cache._id_to_row]
-            gt_lists.append(gts)
+            gt_lists.append([cache.row_index(i) for i in item["gt_img_ids"] if i in cache._id_to_row])
         else:
             if "target_name" in item:
                 target_indices.append(cache.row_index(item["target_name"]))
             member_indices.append([cache.row_index(m) for m in item["member_set"] if m in cache._id_to_row])
 
-    similarity = torch.stack(similarity_rows, dim=0)
+    similarity = compute_similarity(queries, cache, weights, device, args.chunk_size)
+
+    # The reference image is trivially the best "Preserve" match for itself
+    # (identical local features) and is never a valid target, so it is
+    # removed from the ranking, as is standard for CIR evaluation.
+    if not args.keep_reference:
+        similarity[torch.arange(len(reference_rows)), torch.tensor(reference_rows)] = float("-inf")
 
     if args.dataset == "circo":
         results = mean_average_precision_at_k(similarity, gt_lists, [5, 10, 25, 50])
