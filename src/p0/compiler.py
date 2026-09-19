@@ -21,7 +21,12 @@ from pathlib import Path
 
 from PIL import Image
 
-COMPILER_PROMPT = (
+# The protocol's Sec. 5.2 prompt, verbatim. Kept for the record only: run with
+# Qwen2.5-VL-7B it made the model return a bare JSON array of atoms with no
+# "target" (the Sec. 5.2 text never states the {"target", "atoms"} wrapper
+# that Sec. 5.1 defines), so 220/220 CIRCO-val outputs were unparseable, and
+# it split "plants instead of plungers" into REMOVE + ADD rather than REPLACE.
+COMPILER_PROMPT_PROTOCOL_VERBATIM = (
     "You are given a reference image and a modification instruction.\n"
     "Decompose the requested visual change into atomic transition operations.\n"
     "Use only: ADD, REMOVE, PRESERVE, REPLACE.\n"
@@ -35,6 +40,46 @@ COMPILER_PROMPT = (
     "6. PRESERVE has source_state only.\n"
     "7. Split compound modifications into independent atoms.\n"
     "8. Return JSON only."
+)
+
+# Used prompt: the verbatim prompt plus (a) the operation definitions from the
+# protocol's operation table, (b) the output schema and example from Sec. 5.1,
+# and (c) rules 9-10. Additions only; rules 1-8 are unchanged. This is the
+# "improve the prompt/schema" step Sec. 5.3 allows, and it must be reported as
+# a deviation from the verbatim Sec. 5.2 prompt.
+COMPILER_PROMPT = (
+    "You are given a reference image and a modification instruction.\n"
+    "Decompose the requested visual change into atomic transition operations.\n"
+    "Use only: ADD, REMOVE, PRESERVE, REPLACE.\n"
+    "For each atom output: operation, source_state, target_state.\n"
+    "Operations:\n"
+    "- ADD: something absent in the reference image that must appear in the target image.\n"
+    "- REMOVE: something present in the reference image that must disappear.\n"
+    "- PRESERVE: reference-image content that must remain.\n"
+    "- REPLACE: a source visual state that must change into a different target state.\n"
+    "Rules:\n"
+    "1. Use visually observable phrases only.\n"
+    "2. Do not add unsupported information.\n"
+    "3. REPLACE must contain both source_state and target_state.\n"
+    "4. ADD has target_state only.\n"
+    "5. REMOVE has source_state only.\n"
+    "6. PRESERVE has source_state only.\n"
+    "7. Split compound modifications into independent atoms.\n"
+    "8. Return JSON only.\n"
+    "9. If something in the reference image is swapped for something else, output one REPLACE atom, "
+    "not a separate REMOVE and ADD.\n"
+    "10. Set every field that an operation does not use to null.\n"
+    "Output format: one JSON object with exactly two keys.\n"
+    '"target": one sentence describing the complete desired image after the change.\n'
+    '"atoms": the list of atoms.\n'
+    "Example:\n"
+    "{\n"
+    '  "target": "a blue shirt without a logo",\n'
+    '  "atoms": [\n'
+    '    {"operation": "REPLACE", "source_state": "red shirt", "target_state": "blue shirt"},\n'
+    '    {"operation": "REMOVE", "source_state": "white logo", "target_state": null}\n'
+    "  ]\n"
+    "}"
 )
 
 VALID_OPERATIONS = {"ADD", "REMOVE", "PRESERVE", "REPLACE"}
@@ -56,6 +101,26 @@ class TransitionSpec:
 
     def atoms_by_operation(self, operation: str) -> list[TransitionAtom]:
         return [a for a in self.atoms if a.operation == operation]
+
+    def phrases(self, *operation_fields: tuple[str, str]) -> list[str]:
+        """Non-empty phrases of the given (operation, field) pairs, e.g.
+        `spec.phrases(("ADD", "target_state"), ("REPLACE", "target_state"))`."""
+        out: list[str] = []
+        for operation, field_name in operation_fields:
+            for atom in self.atoms_by_operation(operation):
+                value = getattr(atom, field_name)
+                if value:
+                    out.append(value)
+        return out
+
+
+def _clean_state(value) -> str | None:
+    """Empty/blank strings and non-strings become None (models often write ""
+    where the schema says null)."""
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    return None
 
 
 def load_compiler(
@@ -108,27 +173,30 @@ def parse_transition_spec(raw_output: str) -> TransitionSpec:
     manual audit (Sec. 5.3) and should count as "Incorrect" there.
     """
     payload = _extract_json(raw_output)
-    if payload is None or "target" not in payload:
+    target = _clean_state(payload.get("target")) if isinstance(payload, dict) else None
+    if target is None:
         return TransitionSpec(target="", atoms=[], raw_output=raw_output, parse_ok=False)
 
     atoms: list[TransitionAtom] = []
     parse_ok = True
-    for atom in payload.get("atoms", []):
-        operation = atom.get("operation")
+    raw_atoms = payload.get("atoms", [])
+    if not isinstance(raw_atoms, list):
+        raw_atoms, parse_ok = [], False
+    for atom in raw_atoms:
+        operation = atom.get("operation") if isinstance(atom, dict) else None
+        operation = operation.strip().upper() if isinstance(operation, str) else operation
         if operation not in VALID_OPERATIONS:
             parse_ok = False
             continue
         atoms.append(
             TransitionAtom(
                 operation=operation,
-                source_state=atom.get("source_state"),
-                target_state=atom.get("target_state"),
+                source_state=_clean_state(atom.get("source_state")),
+                target_state=_clean_state(atom.get("target_state")),
             )
         )
 
-    return TransitionSpec(
-        target=payload["target"], atoms=atoms, raw_output=raw_output, parse_ok=parse_ok
-    )
+    return TransitionSpec(target=target, atoms=atoms, raw_output=raw_output, parse_ok=parse_ok)
 
 
 def compile_query(

@@ -131,10 +131,10 @@ def main() -> None:
         spec = compiled.get(_query_id(args.dataset, item))
         use_spec = spec is not None and spec.parse_ok
 
-        def probes(operation: str, field: str) -> torch.Tensor | None:
+        def probes(*operation_fields: tuple[str, str]) -> torch.Tensor | None:
             if not use_spec:
                 return None
-            phrases = [getattr(a, field) for a in spec.atoms_by_operation(operation) if getattr(a, field)]
+            phrases = spec.phrases(*operation_fields)
             return encode_text(model, tokenizer, phrases, device) if phrases else None
 
         target_text = spec.target if use_spec else item["relative_caption"]
@@ -142,9 +142,13 @@ def main() -> None:
 
         queries.append({
             "target": encode_text(model, tokenizer, [target_text], device)[0],
-            "add": probes("ADD", "target_state"),
-            "preserve": probes("PRESERVE", "source_state"),
-            "remove": probes("REMOVE", "source_state"),
+            # E0 is TAPR's factor-wise baseline, which has no REPLACE concept: a
+            # replacement is scored as the independent Add (its target_state)
+            # + Remove (its source_state) that H3 argues against. Dropping
+            # REPLACE atoms here would silently discard part of the edit.
+            "add": probes(("ADD", "target_state"), ("REPLACE", "target_state")),
+            "preserve": probes(("PRESERVE", "source_state")),
+            "remove": probes(("REMOVE", "source_state"), ("REPLACE", "source_state")),
             "reference_local": cache.local_vectors(reference_id).to(device),
         })
         reference_rows.append(cache.row_index(reference_id))
