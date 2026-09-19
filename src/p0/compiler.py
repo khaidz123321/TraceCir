@@ -161,6 +161,12 @@ def _clean_state(value) -> str | None:
     return None
 
 
+def _is_qwen3(model_name: str) -> bool:
+    """Qwen3.x checkpoints (the TAPR paper's factorizer is Qwen3.6-27B) use a
+    different model class and a chat template that thinks by default."""
+    return "qwen3" in model_name.lower()
+
+
 def load_compiler(
     model_name: str = "Qwen/Qwen2.5-VL-7B-Instruct",
     device: str = "cuda",
@@ -182,7 +188,12 @@ def load_compiler(
         kwargs.pop("device_map")
         kwargs["device_map"] = "auto"
 
-    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_name, **kwargs)
+    if _is_qwen3(model_name):
+        from transformers import AutoModelForImageTextToText
+
+        model = AutoModelForImageTextToText.from_pretrained(model_name, **kwargs)
+    else:
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_name, **kwargs)
     model.eval()
     processor = AutoProcessor.from_pretrained(model_name)
     return model, processor
@@ -243,6 +254,7 @@ def compile_query(
     reference_image: Image.Image,
     modification: str,
     max_new_tokens: int = 512,
+    qwen3: bool = False,
 ) -> TransitionSpec:
     """Run one (reference image, modification text) query through the
     compiler and return its parsed TransitionSpec.
@@ -259,11 +271,18 @@ def compile_query(
             ],
         }
     ]
-    text_prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    image_inputs, video_inputs = process_vision_info(messages)
-    inputs = processor(
-        text=[text_prompt], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt"
-    ).to(model.device)
+    if qwen3:
+        # Thinking is switched off: the output must be the JSON object itself.
+        inputs = processor.apply_chat_template(
+            messages, tokenize=True, add_generation_prompt=True, return_dict=True,
+            return_tensors="pt", enable_thinking=False,
+        ).to(model.device)
+    else:
+        text_prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        image_inputs, video_inputs = process_vision_info(messages)
+        inputs = processor(
+            text=[text_prompt], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt"
+        ).to(model.device)
 
     with torch.no_grad():
         generated = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)

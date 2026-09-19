@@ -28,7 +28,7 @@ from typing import Callable
 from tqdm import tqdm
 
 from ..data.datasets import CIRCODataset, CIRRDataset
-from .compiler import compile_query, load_compiler
+from .compiler import _is_qwen3, compile_query, load_compiler
 from .run_e0 import _query_id
 
 
@@ -130,7 +130,7 @@ def main() -> None:
 
     newly = compile_queries(
         items,
-        lambda image, text: compile_query(model, processor, image, text),
+        lambda image, text: compile_query(model, processor, image, text, qwen3=_is_qwen3(args.model_name)),
         args.output_path,
         args.dataset,
         args.limit,
