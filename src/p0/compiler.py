@@ -42,19 +42,20 @@ COMPILER_PROMPT_PROTOCOL_VERBATIM = (
     "8. Return JSON only."
 )
 
-# Used prompt: the verbatim prompt plus (a) the operation definitions from the
-# protocol's operation table, (b) the output schema and example from Sec. 5.1,
-# and (c) rules 9-20 (15-20 added after the manual pre-audit of 100 CIRCO-val
-# outputs, which showed: target describing the reference image instead of the
-# edited one, "same ..." not becoming PRESERVE, negation not becoming REMOVE,
-# invented values for "different ...", vague sources, reversed verbs). Additions only; rules 1-8 are unchanged. This is the
-# "improve the prompt/schema" step Sec. 5.3 allows, and it must be reported as
-# a deviation from the verbatim Sec. 5.2 prompt.
-# Rules 11-14 came from a 10-query smoke test (first 10 CIRCO-val queries):
-# source/target swapped, ADD phrase put in source_state, viewpoint/zoom changes
-# dropped, invented objects. The prompt is tuned against decomposition
-# correctness (manual audit) only, never against retrieval metrics, and must be
-# frozen before E0-E4 are run.
+# Used prompt (v4): the verbatim prompt plus (a) the operation definitions from
+# the protocol's operation table, (b) the output schema from Sec. 5.1, (c) rules
+# 9-14 and (d) five worked examples. Additions only; rules 1-8 are unchanged.
+# This is the "improve the prompt/schema" step Sec. 5.3 allows, and it must be
+# reported as a deviation from the verbatim Sec. 5.2 prompt.
+# History: rules 11-14 came from a 10-query smoke test (source/target swapped,
+# ADD phrase in source_state, viewpoint/zoom dropped, invented objects). A v3
+# that stacked rules 15-20 on top (target-after-edit, PRESERVE for "same", REMOVE
+# for negation, ...) made the 7B model over-apply them (reversed polarity, dropped
+# atoms) and was worse than v2 in a side-by-side read of the 100 audited queries,
+# so v4 returns to rules 1-14 and teaches the same behaviours by example instead.
+# The examples are invented, not taken from any CIRCO/CIRR query. The prompt is
+# tuned against decomposition correctness (manual audit) only, never against
+# retrieval metrics, and must be frozen before E0-E4 are run.
 COMPILER_PROMPT = (
     "You are given a reference image and a modification instruction.\n"
     "Decompose the requested visual change into atomic transition operations.\n"
@@ -84,30 +85,39 @@ COMPILER_PROMPT = (
     "the reference image's current value as source_state "
     '(for example REPLACE "shot from the side" -> "shot from above").\n'
     "14. Describe only what the reference image shows or the instruction states. Do not invent objects.\n"
-    '15. "target" describes the image AFTER the change: start from what the reference image shows, apply every '
-    "change in the instruction, and never restate anything the instruction removes or replaces.\n"
-    '16. If the instruction says something stays the same ("same", "keep", "still", "unchanged", "as before"), '
-    "output a PRESERVE atom for it. Do not turn it into REPLACE or ADD.\n"
-    '17. If the instruction says something is absent ("no X", "without X", "not X"), output REMOVE for X when the '
-    'reference image shows X. Never write "no X" or "without X" as a target_state.\n'
-    '18. If the instruction only says "different", "another" or "other" without naming a value, do not choose a '
-    'specific value: write target_state as "different <attribute>" (for example "different colour").\n'
-    "19. source_state must name what the reference image actually shows, in concrete visual words. "
-    'Never write vague sources such as "current view" or "current colour".\n'
-    "20. Read verbs literally: an instruction that says something is happening (for example 'are eating') "
-    "means it must appear in the target image, never be removed.\n"
     "Output format: one JSON object with exactly two keys.\n"
     '"target": one sentence describing the complete desired image after the change.\n'
     '"atoms": the list of atoms.\n'
-    "Example:\n"
-    "{\n"
-    '  "target": "a blue shirt without a logo",\n'
-    '  "atoms": [\n'
-    '    {"operation": "REPLACE", "source_state": "red shirt", "target_state": "blue shirt"},\n'
-    '    {"operation": "REMOVE", "source_state": "white logo", "target_state": null},\n'
-    '    {"operation": "PRESERVE", "source_state": "shirt shape", "target_state": null}\n'
-    "  ]\n"
-    "}"
+    "Worked examples (the text in brackets stands for the reference image you would see):\n"
+    "\n"
+    "[Reference image: a red bicycle leaning on a brick wall]\n"
+    "Instruction: is blue and has a basket\n"
+    '{"target": "a blue bicycle with a basket leaning on a brick wall", "atoms": ['
+    '{"operation": "REPLACE", "source_state": "red bicycle", "target_state": "blue bicycle"}, '
+    '{"operation": "ADD", "source_state": null, "target_state": "basket"}]}\n'
+    "\n"
+    "[Reference image: a close-up of a white plate on a table]\n"
+    "Instruction: has the same plate and is shot from a farther distance\n"
+    '{"target": "a white plate on a table, shot from a farther distance", "atoms": ['
+    '{"operation": "PRESERVE", "source_state": "white plate", "target_state": null}, '
+    '{"operation": "REPLACE", "source_state": "close-up shot", "target_state": "shot from a farther distance"}]}\n'
+    "\n"
+    "[Reference image: a living room with a sofa, a lamp that is on, and a cat on the sofa]\n"
+    "Instruction: has no cat and the lamp is off\n"
+    '{"target": "a living room with a sofa and a lamp that is off", "atoms": ['
+    '{"operation": "REMOVE", "source_state": "cat on the sofa", "target_state": null}, '
+    '{"operation": "REPLACE", "source_state": "lamp on", "target_state": "lamp off"}]}\n'
+    "\n"
+    "[Reference image: a silver kettle on a stove, shot from the side]\n"
+    "Instruction: is a different color and is seen from above\n"
+    '{"target": "a kettle of a different colour on a stove, seen from above", "atoms": ['
+    '{"operation": "REPLACE", "source_state": "silver kettle", "target_state": "kettle of a different colour"}, '
+    '{"operation": "REPLACE", "source_state": "shot from the side", "target_state": "shot from above"}]}\n'
+    "\n"
+    "[Reference image: a lake with a wooden dock]\n"
+    "Instruction: has two ducks on the water\n"
+    '{"target": "a lake with a wooden dock and two ducks on the water", "atoms": ['
+    '{"operation": "ADD", "source_state": null, "target_state": "two ducks on the water"}]}'
 )
 
 VALID_OPERATIONS = {"ADD", "REMOVE", "PRESERVE", "REPLACE"}
