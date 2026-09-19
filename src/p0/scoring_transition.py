@@ -1,8 +1,8 @@
 """TRACE-CIR transition scoring for P0 (protocol Sec. 8-10).
 
-Implemented so far: E1 (Sec. 9.1, absolute transition matching). E2-E4 (source
-grounding, local delta, coupled REPLACE) build on the same primitives and the
-same query record and are added here as they are implemented.
+Implemented so far: E1 (Sec. 9.1, absolute transition matching) and E2 (Sec. 7
+and 9.2, source-grounded source state). E3-E4 (local delta, coupled REPLACE)
+build on the same primitives and the same query record.
 
 Everything E1-E4 share follows the protocol: one local matcher
 
@@ -45,6 +45,12 @@ class TransitionQuery:
     preserve_minus: torch.Tensor | None = None
     replace_plus: torch.Tensor | None = None
     replace_minus: torch.Tensor | None = None
+    # E2+: the reference image's (M, d) local vectors and the source-grounded
+    # prototypes z- (Sec. 7) of the REMOVE / PRESERVE source phrases, filled by
+    # `ground_query`.
+    reference_local: torch.Tensor | None = None
+    remove_z: torch.Tensor | None = None
+    preserve_z: torch.Tensor | None = None
 
     @property
     def num_atoms(self) -> int:
@@ -101,6 +107,79 @@ def e1_score_batched(
         edit = edit - local_match_batched(query.remove_minus, candidate_local, tau_m).sum(dim=0)
     if query.preserve_minus is not None:
         edit = edit + local_match_batched(query.preserve_minus, candidate_local, tau_m).sum(dim=0)
+    if query.replace_plus is not None:
+        gain = local_match_batched(query.replace_plus, candidate_local, tau_m)
+        lose = local_match_batched(query.replace_minus, candidate_local, tau_m)
+        edit = edit + (gain - lose).sum(dim=0)
+    return score + lambda_edit * edit / num_atoms
+
+
+def ground_source(
+    source_probes: torch.Tensor,
+    reference_local: torch.Tensor,
+    tau_g: float = 0.02,
+    normalize: bool = False,
+) -> torch.Tensor:
+    """Source-grounded visual prototypes z- (Sec. 7).
+
+        alpha_jk = softmax_k( (u-_j)^T v_k^r / tau_g ),   z-_j = sum_k alpha_jk v_k^r
+
+    Args:
+        source_probes: (n, d) unit text vectors of the source phrases.
+        reference_local: (M, d) unit local vectors of the reference image.
+        normalize: L2-normalise z-. The protocol does not ask for it, so the
+            default keeps z- as the raw convex combination (norm <= 1).
+
+    Returns:
+        (n, d) prototypes.
+    """
+    alpha = torch.softmax(source_probes @ reference_local.t() / tau_g, dim=-1)
+    z = alpha @ reference_local
+    return torch.nn.functional.normalize(z, dim=-1) if normalize else z
+
+
+def ground_query(query: TransitionQuery, tau_g: float = 0.02, normalize: bool = False) -> TransitionQuery:
+    """Fill `remove_z` / `preserve_z` of a query that has `reference_local`."""
+    if query.reference_local is None:
+        raise ValueError("ground_query needs query.reference_local")
+    if query.remove_minus is not None:
+        query.remove_z = ground_source(query.remove_minus, query.reference_local, tau_g, normalize)
+    if query.preserve_minus is not None:
+        query.preserve_z = ground_source(query.preserve_minus, query.reference_local, tau_g, normalize)
+    return query
+
+
+def e2_score_batched(
+    query: TransitionQuery,
+    candidate_global: torch.Tensor,
+    candidate_local: torch.Tensor,
+    lambda_edit: float = 0.5,
+    tau_m: float = 0.02,
+) -> torch.Tensor:
+    """E2 (Sec. 9.2): E1 with the REMOVE and PRESERVE source states grounded
+    in the reference image.
+
+        ADD:      M(u+, I_c)                      (as E1)
+        REMOVE:   M(z-, I_r) - M(z-, I_c)
+        PRESERVE: M(z-, I_c)
+        REPLACE:  M(u+, I_c) - M(u-, I_c)         (as E1: Sec. 9.2 lists only
+                                                   REMOVE and PRESERVE)
+
+    `query` must have been through `ground_query`.
+    """
+    score = candidate_global @ query.target
+    num_atoms = query.num_atoms
+    if num_atoms == 0:
+        return score
+
+    edit = torch.zeros_like(score)
+    if query.add_plus is not None:
+        edit = edit + local_match_batched(query.add_plus, candidate_local, tau_m).sum(dim=0)
+    if query.remove_z is not None:
+        at_reference = local_match_batched(query.remove_z, query.reference_local.unsqueeze(0), tau_m)  # (n, 1)
+        edit = edit + (at_reference - local_match_batched(query.remove_z, candidate_local, tau_m)).sum(dim=0)
+    if query.preserve_z is not None:
+        edit = edit + local_match_batched(query.preserve_z, candidate_local, tau_m).sum(dim=0)
     if query.replace_plus is not None:
         gain = local_match_batched(query.replace_plus, candidate_local, tau_m)
         lose = local_match_batched(query.replace_minus, candidate_local, tau_m)

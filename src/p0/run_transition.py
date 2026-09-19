@@ -2,7 +2,7 @@
 """P0 E1-E4 (protocol Sec. 9): TRACE-CIR transition scoring on CIRCO and/or
 CIRR validation, on the same feature cache and compiled queries as E0.
 
-Only `--variant e1` exists so far (absolute transition matching, H1 vs E0).
+E1 = absolute transition matching (H1 vs E0); E2 = E1 + source-grounded source state (Sec. 7, 9.2).
 
 Example:
     python -m src.p0.run_transition --variant e1 \
@@ -31,9 +31,9 @@ from ..seed import set_seed
 from .compiler import TransitionSpec, load_compiled_queries
 from .feature_cache import FeatureCache
 from .run_e0 import _query_id
-from .scoring_transition import TransitionQuery, e1_score_batched
+from .scoring_transition import TransitionQuery, e1_score_batched, e2_score_batched, ground_query
 
-VARIANTS = {"e1": e1_score_batched}
+VARIANTS = {"e1": e1_score_batched, "e2": e2_score_batched}
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,6 +48,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--openclip-pretrained", type=str, default="laion2b_s32b_b82k")
     parser.add_argument("--lambda-edit", type=float, default=0.5, help="Sec. 10 default 0.5; grid 0.25/0.5/1.0.")
     parser.add_argument("--tau-m", type=float, default=0.02, help="Sec. 8 default 0.02.")
+    parser.add_argument("--tau-g", type=float, default=0.02, help="Sec. 7 grounding temperature; grid 0.01/0.02/0.04.")
+    parser.add_argument("--normalize-prototype", action="store_true",
+                        help="L2-normalise the grounded prototypes z- (not asked for by the protocol).")
     parser.add_argument("--chunk-size", type=int, default=2048)
     parser.add_argument("--keep-reference", action="store_true")
     parser.add_argument("--per-query-out", type=str, default=None,
@@ -135,8 +138,11 @@ def main() -> None:
             fallback += 1
         query, dropped = build_transition_query(spec, item["relative_caption"], model, tokenizer, device)
         dropped_total += dropped
-        queries.append(query)
         reference_id = item["reference_img_id"] if args.dataset == "circo" else item["reference_name"]
+        if args.variant != "e1":
+            query.reference_local = cache.local_vectors(reference_id).float().to(device)
+            ground_query(query, args.tau_g, args.normalize_prototype)
+        queries.append(query)
         reference_rows.append(cache.row_index(reference_id))
         if args.dataset == "circo":
             gt_lists.append([cache.row_index(i) for i in item["gt_img_ids"] if i in cache._id_to_row])
