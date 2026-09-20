@@ -28,7 +28,7 @@ from typing import Callable
 from tqdm import tqdm
 
 from ..data.datasets import CIRCODataset, CIRRDataset
-from .compiler import _is_qwen3, compile_query, load_compiler
+from .compiler import _is_qwen3, compile_batch, compile_query, load_compiler
 from .run_e0 import _query_id
 
 
@@ -65,6 +65,8 @@ def compile_queries(
     output_path: str,
     dataset: str,
     limit: int | None = None,
+    batch_size: int = 1,
+    batch_compile_fn: Callable | None = None,
 ) -> int:
     """Compile every not-yet-done query and append its record to `output_path`.
 
@@ -72,6 +74,10 @@ def compile_queries(
         items: iterable of dataset items, each with "reference_image" (PIL),
             "relative_caption" and the id fields `_query_id` needs.
         compile_fn: (image, modification) -> TransitionSpec.
+        batch_size / batch_compile_fn: with batch_size > 1, up to `batch_size`
+            pending queries are compiled together with
+            batch_compile_fn(images, modifications) -> list[TransitionSpec];
+            each record is still appended and flushed as soon as the batch ends.
 
     Returns:
         Number of queries newly compiled in this call.
@@ -82,25 +88,50 @@ def compile_queries(
     if done:
         print(f"Resume: {len(done)} cau da co trong {output_path}", flush=True)
 
-    newly = 0
-    with open(output_path, "a", encoding="utf-8") as out:
-        for index, item in enumerate(tqdm(items, desc="Compiling")):
+    def pending():
+        for index, item in enumerate(items):
             if limit is not None and index >= limit:
-                break
+                return
             query_id = _query_id(dataset, item)
-            if query_id in done:
+            if query_id not in done:
+                yield query_id, item
+
+    def write(out, query_id, item, spec) -> None:
+        out.write(json.dumps({
+            "query_id": query_id,
+            "modification": item["relative_caption"],
+            "target": spec.target,
+            "atoms": [a.__dict__ for a in spec.atoms],
+            "parse_ok": spec.parse_ok,
+            "raw_output": spec.raw_output,
+        }, ensure_ascii=False) + "\n")
+        out.flush()
+
+    newly = 0
+    progress = tqdm(total=len(items) if limit is None else min(limit, len(items)), initial=len(done), desc="Compiling")
+    with open(output_path, "a", encoding="utf-8") as out:
+        batch: list = []
+        for query_id, item in pending():
+            if batch_size <= 1 or batch_compile_fn is None:
+                write(out, query_id, item, compile_fn(item["reference_image"], item["relative_caption"]))
+                newly += 1
+                progress.update(1)
                 continue
-            spec = compile_fn(item["reference_image"], item["relative_caption"])
-            out.write(json.dumps({
-                "query_id": query_id,
-                "modification": item["relative_caption"],
-                "target": spec.target,
-                "atoms": [a.__dict__ for a in spec.atoms],
-                "parse_ok": spec.parse_ok,
-                "raw_output": spec.raw_output,
-            }, ensure_ascii=False) + "\n")
-            out.flush()
-            newly += 1
+            batch.append((query_id, item))
+            if len(batch) == batch_size:
+                specs = batch_compile_fn([i["reference_image"] for _, i in batch], [i["relative_caption"] for _, i in batch])
+                for (qid, it), spec in zip(batch, specs):
+                    write(out, qid, it, spec)
+                newly += len(batch)
+                progress.update(len(batch))
+                batch = []
+        if batch:
+            specs = batch_compile_fn([i["reference_image"] for _, i in batch], [i["relative_caption"] for _, i in batch])
+            for (qid, it), spec in zip(batch, specs):
+                write(out, qid, it, spec)
+            newly += len(batch)
+            progress.update(len(batch))
+    progress.close()
     return newly
 
 
@@ -114,6 +145,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--load-in-4bit", action="store_true",
                         help="Quantize to 4-bit (needed on ~12GB GPUs). Default: bf16, ~16GB VRAM.")
     parser.add_argument("--limit", type=int, default=None, help="Only compile the first N queries (smoke test).")
+    parser.add_argument("--batch-size", type=int, default=1,
+                        help="Queries per generate call (Qwen3.x only). Larger is faster; results can differ "
+                             "slightly from batch size 1 because of padding.")
     return parser.parse_args()
 
 
@@ -128,12 +162,15 @@ def main() -> None:
     model, processor = load_compiler(args.model_name, device="cuda", load_in_4bit=args.load_in_4bit)
     print("Da nap compiler", args.model_name, flush=True)
 
+    qwen3 = _is_qwen3(args.model_name)
     newly = compile_queries(
         items,
-        lambda image, text: compile_query(model, processor, image, text, qwen3=_is_qwen3(args.model_name)),
+        lambda image, text: compile_query(model, processor, image, text, qwen3=qwen3),
         args.output_path,
         args.dataset,
         args.limit,
+        batch_size=args.batch_size if qwen3 else 1,
+        batch_compile_fn=(lambda images, texts: compile_batch(model, processor, images, texts)) if qwen3 else None,
     )
 
     done = load_done_ids(args.output_path)

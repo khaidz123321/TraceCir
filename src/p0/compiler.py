@@ -294,6 +294,45 @@ def compile_query(
     return parse_transition_spec(raw_output)
 
 
+def compile_batch(
+    model,
+    processor,
+    reference_images: list[Image.Image],
+    modifications: list[str],
+    max_new_tokens: int = 512,
+) -> list[TransitionSpec]:
+    """`compile_query` for several queries in one `generate` call (Qwen3.x path).
+
+    Same prompt, same greedy decoding; prompts are left-padded so the batch runs
+    together. Padding can change the floating-point results slightly, so a
+    query may (rarely) come out worded differently than when compiled alone.
+    """
+    import torch
+
+    messages_list = [
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": f"{COMPILER_PROMPT}\n\nModification instruction: {modification}"},
+                ],
+            }
+        ]
+        for image, modification in zip(reference_images, modifications)
+    ]
+    processor.tokenizer.padding_side = "left"
+    inputs = processor.apply_chat_template(
+        messages_list, tokenize=True, add_generation_prompt=True, return_dict=True,
+        return_tensors="pt", padding=True, enable_thinking=False,
+    ).to(model.device)
+    with torch.no_grad():
+        generated = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+    trimmed = generated[:, inputs.input_ids.shape[1]:]
+    outputs = processor.batch_decode(trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+    return [parse_transition_spec(text) for text in outputs]
+
+
 def run_compiler_batch(
     model,
     processor,
