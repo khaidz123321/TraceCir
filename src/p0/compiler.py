@@ -306,7 +306,35 @@ def compile_batch(
     Same prompt, same greedy decoding; prompts are left-padded so the batch runs
     together. Padding can change the floating-point results slightly, so a
     query may (rarely) come out worded differently than when compiled alone.
+
+    If the GPU runs out of memory (the 4-bit 27B model leaves only a few GB on a
+    24 GB card, and image sizes vary), the batch is split in half and retried,
+    down to a single query.
     """
+    import gc
+
+    import torch
+
+    try:
+        return _compile_batch_once(model, processor, reference_images, modifications, max_new_tokens)
+    except torch.OutOfMemoryError:
+        if len(reference_images) == 1:
+            raise
+    # Retry outside the except block so the failed call's tensors can be freed.
+    gc.collect()
+    torch.cuda.empty_cache()
+    half = len(reference_images) // 2
+    return compile_batch(model, processor, reference_images[:half], modifications[:half], max_new_tokens) + \
+        compile_batch(model, processor, reference_images[half:], modifications[half:], max_new_tokens)
+
+
+def _compile_batch_once(
+    model,
+    processor,
+    reference_images: list[Image.Image],
+    modifications: list[str],
+    max_new_tokens: int,
+) -> list[TransitionSpec]:
     import torch
 
     messages_list = [
