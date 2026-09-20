@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 from typing import Callable
 
 from tqdm import tqdm
@@ -67,6 +68,7 @@ def compile_queries(
     limit: int | None = None,
     batch_size: int = 1,
     batch_compile_fn: Callable | None = None,
+    indices: list[int] | None = None,
 ) -> int:
     """Compile every not-yet-done query and append its record to `output_path`.
 
@@ -74,6 +76,9 @@ def compile_queries(
         items: iterable of dataset items, each with "reference_image" (PIL),
             "relative_caption" and the id fields `_query_id` needs.
         compile_fn: (image, modification) -> TransitionSpec.
+        indices: compile only these dataset positions (e.g. a random audit
+            sample); default is every query. Later runs without `indices`
+            resume and finish the rest.
         batch_size / batch_compile_fn: with batch_size > 1, up to `batch_size`
             pending queries are compiled together with
             batch_compile_fn(images, modifications) -> list[TransitionSpec];
@@ -88,10 +93,13 @@ def compile_queries(
     if done:
         print(f"Resume: {len(done)} cau da co trong {output_path}", flush=True)
 
+    positions = list(range(len(items))) if indices is None else list(indices)
+
     def pending():
-        for index, item in enumerate(items):
-            if limit is not None and index >= limit:
+        for count, index in enumerate(positions):
+            if limit is not None and count >= limit:
                 return
+            item = items[index]
             query_id = _query_id(dataset, item)
             if query_id not in done:
                 yield query_id, item
@@ -108,7 +116,7 @@ def compile_queries(
         out.flush()
 
     newly = 0
-    progress = tqdm(total=len(items) if limit is None else min(limit, len(items)), initial=len(done), desc="Compiling")
+    progress = tqdm(total=len(positions) if limit is None else min(limit, len(positions)), initial=len(done), desc="Compiling")
     with open(output_path, "a", encoding="utf-8") as out:
         batch: list = []
         for query_id, item in pending():
@@ -145,6 +153,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--load-in-4bit", action="store_true",
                         help="Quantize to 4-bit (needed on ~12GB GPUs). Default: bf16, ~16GB VRAM.")
     parser.add_argument("--limit", type=int, default=None, help="Only compile the first N queries (smoke test).")
+    parser.add_argument("--sample", type=int, default=None,
+                        help="Compile only a random sample of N queries first (for the Sec. 5.3 audit); "
+                             "a later run without --sample finishes the rest.")
+    parser.add_argument("--sample-seed", type=int, default=0)
     parser.add_argument("--batch-size", type=int, default=1,
                         help="Queries per generate call (Qwen3.x only). Larger is faster; results can differ "
                              "slightly from batch size 1 because of padding.")
@@ -162,6 +174,9 @@ def main() -> None:
     model, processor = load_compiler(args.model_name, device="cuda", load_in_4bit=args.load_in_4bit)
     print("Da nap compiler", args.model_name, flush=True)
 
+    indices = None
+    if args.sample is not None:
+        indices = sorted(random.Random(args.sample_seed).sample(range(len(items)), args.sample))
     qwen3 = _is_qwen3(args.model_name)
     newly = compile_queries(
         items,
@@ -171,6 +186,7 @@ def main() -> None:
         args.limit,
         batch_size=args.batch_size if qwen3 else 1,
         batch_compile_fn=(lambda images, texts: compile_batch(model, processor, images, texts)) if qwen3 else None,
+        indices=indices,
     )
 
     done = load_done_ids(args.output_path)
