@@ -318,11 +318,24 @@ def compile_batch(
     try:
         return _compile_batch_once(model, processor, reference_images, modifications, max_new_tokens)
     except torch.OutOfMemoryError:
-        if len(reference_images) == 1:
-            raise
+        pass
     # Retry outside the except block so the failed call's tensors can be freed.
     gc.collect()
     torch.cuda.empty_cache()
+    if len(reference_images) == 1:
+        # A single query that does not fit: shrink only this reference image
+        # (by 30% per attempt, at most 3 times) and say so in the log.
+        image = reference_images[0]
+        for attempt in range(1, 4):
+            image = image.resize((max(64, int(image.width * 0.7)), max(64, int(image.height * 0.7))))
+            print(f"WARNING: out of GPU memory on one query; retrying with the reference image shrunk to "
+                  f"{image.width}x{image.height} (attempt {attempt})", flush=True)
+            try:
+                return _compile_batch_once(model, processor, [image], modifications, max_new_tokens)
+            except torch.OutOfMemoryError:
+                gc.collect()
+                torch.cuda.empty_cache()
+        raise torch.OutOfMemoryError("query does not fit even after shrinking the image three times")
     half = len(reference_images) // 2
     return compile_batch(model, processor, reference_images[:half], modifications[:half], max_new_tokens) + \
         compile_batch(model, processor, reference_images[half:], modifications[half:], max_new_tokens)
