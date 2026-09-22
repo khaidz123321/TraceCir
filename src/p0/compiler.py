@@ -176,7 +176,11 @@ def load_compiler(
     import torch
     from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
-    kwargs = {"torch_dtype": torch.bfloat16, "device_map": device}
+    # device_map pinned to a single GPU (not "auto"): on a RAM-constrained
+    # shared host, accelerate's auto balancer can misjudge budget and offload
+    # part of the model to CPU RAM, causing severe swap thrashing even though
+    # the whole quantized model fits in one GPU's VRAM.
+    kwargs = {"torch_dtype": torch.bfloat16, "device_map": {"": 0}, "low_cpu_mem_usage": True}
     if load_in_4bit:
         from transformers import BitsAndBytesConfig
 
@@ -185,8 +189,6 @@ def load_compiler(
             bnb_4bit_compute_dtype=torch.bfloat16,
             bnb_4bit_quant_type="nf4",
         )
-        kwargs.pop("device_map")
-        kwargs["device_map"] = "auto"
 
     if _is_qwen3(model_name):
         from transformers import AutoModelForImageTextToText
