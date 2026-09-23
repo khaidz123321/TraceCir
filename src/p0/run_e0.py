@@ -61,6 +61,34 @@ def _query_id(dataset: str, item: dict) -> str:
     return item["reference_name"] + "|" + str(item["pair_id"])
 
 
+def save_cirr_per_query(
+    path: str, similarity: torch.Tensor, target_indices: list[int], meta: list[dict], cache: "FeatureCache",
+    top_k: int = 10,
+) -> None:
+    """Per-query CIRR diagnostics for failure-case selection: rank of the
+    ground-truth target (1-indexed; None if the query has no target_name) and
+    the top-`top_k` candidate image ids, alongside each query's metadata.
+    Saved as JSON (not .npz) since entries are per-query dicts of mixed types.
+    """
+    import json as _json
+
+    ranking = similarity.argsort(dim=-1, descending=True)
+    records = []
+    for i, row in enumerate(meta):
+        top_rows = ranking[i, :top_k].tolist()
+        record = dict(row)
+        record["top_k_image_ids"] = [cache.image_ids[r] for r in top_rows]
+        if i < len(target_indices) and row.get("target_name") is not None:
+            target_row = target_indices[i]
+            rank = (ranking[i] == target_row).nonzero(as_tuple=True)[0]
+            record["target_rank"] = int(rank.item()) + 1 if len(rank) else None
+        else:
+            record["target_rank"] = None
+        records.append(record)
+    with open(path, "w", encoding="utf-8") as f:
+        _json.dump(records, f, ensure_ascii=False)
+
+
 def compute_similarity(
     queries: list[dict],
     cache: FeatureCache,
@@ -128,6 +156,7 @@ def main() -> None:
     target_indices: list[int] = []
     gt_lists: list[list[int]] = []
     member_indices: list[list[int]] = []
+    cirr_meta: list[dict] = []  # per-query context, for CIRR failure-case selection
 
     for item in tqdm(query_ds, desc="Encoding queries"):
         spec = compiled.get(_query_id(args.dataset, item))
@@ -161,6 +190,13 @@ def main() -> None:
             if "target_name" in item:
                 target_indices.append(cache.row_index(item["target_name"]))
             member_indices.append([cache.row_index(m) for m in item["member_set"] if m in cache._id_to_row])
+            cirr_meta.append({
+                "query_id": _query_id(args.dataset, item),
+                "reference_name": item["reference_name"],
+                "modification": item["relative_caption"],
+                "target_name": item.get("target_name"),
+                "parse_ok": use_spec,
+            })
 
     similarity = compute_similarity(queries, cache, weights, device, args.chunk_size)
 
@@ -185,6 +221,8 @@ def main() -> None:
         print({f"E0 R@{k}": v for k, v in results.items()})
         subset_results = recall_subset_at_k(similarity, torch.tensor(target_indices), member_indices, [1, 2, 3])
         print({f"E0 R_subset@{k}": v for k, v in subset_results.items()})
+        if args.per_query_out:
+            save_cirr_per_query(args.per_query_out, similarity, target_indices, cirr_meta, cache)
 
 
 if __name__ == "__main__":

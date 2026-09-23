@@ -31,7 +31,7 @@ from ..models.openclip_utils import encode_text, load_openclip
 from ..seed import set_seed
 from .compiler import TransitionSpec, load_compiled_queries
 from .feature_cache import FeatureCache
-from .run_e0 import _query_id
+from .run_e0 import _query_id, save_cirr_per_query
 from .scoring_transition import (
     TransitionQuery,
     e1_score_batched,
@@ -139,6 +139,7 @@ def main() -> None:
     target_indices: list[int] = []
     gt_lists: list[list[int]] = []
     member_indices: list[list[int]] = []
+    cirr_meta: list[dict] = []
     dropped_total = fallback = 0
 
     for item in tqdm(query_ds, desc="Encoding queries"):
@@ -159,6 +160,13 @@ def main() -> None:
             if "target_name" in item:
                 target_indices.append(cache.row_index(item["target_name"]))
             member_indices.append([cache.row_index(m) for m in item["member_set"] if m in cache._id_to_row])
+            cirr_meta.append({
+                "query_id": _query_id(args.dataset, item),
+                "reference_name": item["reference_name"],
+                "modification": item["relative_caption"],
+                "target_name": item.get("target_name"),
+                "parse_ok": spec is not None and spec.parse_ok,
+            })
 
     atom_counts = [q.num_atoms for q in queries]
     print(f"{len(queries)} queries | {fallback} fell back to Target-only | {dropped_total} atoms dropped "
@@ -183,6 +191,8 @@ def main() -> None:
         print({f"{tag} R@{k}": v for k, v in recall_at_k(similarity, torch.tensor(target_indices), [1, 5, 10, 50]).items()})
         print({f"{tag} R_subset@{k}": v for k, v in
                recall_subset_at_k(similarity, torch.tensor(target_indices), member_indices, [1, 2, 3]).items()})
+        if args.per_query_out:
+            save_cirr_per_query(args.per_query_out, similarity, target_indices, cirr_meta, cache)
 
 
 if __name__ == "__main__":
