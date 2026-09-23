@@ -112,3 +112,31 @@ Reading: coupling REPLACE (E4) clearly beats summing it (E3); E3 is worse than E
 source (diffuse z-) is worse than its text. E4 is at or slightly above E1/E2 and still below E0 overall, but the
 E0-E4 gap is not significant. E4 is ahead of E0 on REPLACE-only queries (+1.7, n = 49, not tested) and behind on
 queries without REPLACE (-3.9, n = 39), where E0's reference-continuity term has no counterpart in E1-E4.
+
+# CIRR val (4181 queries) — full results, all E0-E4
+
+Compiler: Qwen3.6-27B, prompt v4, full 4181/4181 compiled, 1 parse failure. Same formulas/defaults as CIRCO
+(tau_g = tau_m = 0.02, lambda_edit = 0.5, beta = 10). Reference image excluded from the ranking.
+
+| | R@1 | R@5 | R@10 | R@50 | R_subset@1 | R_subset@2 | R_subset@3 |
+|---|---|---|---|---|---|---|---|
+| E0 (baseline) | **36.00** | 67.54 | 79.12 | 93.92 | 65.46 | 83.88 | 92.39 |
+| E1 (+H1) | 32.17 | 62.57 | 74.12 | 90.96 | 67.76 | 84.72 | 92.44 |
+| E3 (+H1+H2) | 30.02 | 59.70 | 71.63 | 89.69 | 67.38 | 84.38 | 92.47 |
+| E4 (+H1+H2+H3) | 31.79 | 62.74 | 74.46 | 91.65 | 66.95 | 84.12 | 92.49 |
+| Reference: TAPR paper, ViT-L, CIRR test | 40.17 | 71.23 | 81.35 | - | - | - | - |
+
+Paired per-query (hit@1 = 1 if target ranked #1), bootstrap 10,000 resamples, n = 4181:
+
+| Comparison | Diff (points) | 95% CI |
+|---|---|---|
+| E1 - E0 (H1) | -3.83 | [-4.97, -2.70] — **significant, E1 worse** |
+| E3 - E0 (+H1+H2) | -5.98 | [-7.25, -4.74] — **significant, E3 worse** |
+| E4 - E0 (full) | -4.21 | [-5.43, -2.99] — **significant, E4 worse** |
+| E4 - E3 (H3) | +1.77 | [+1.17, +2.37] — **significant, E4 better than E3** |
+
+Reading: on CIRR (much larger n than CIRCO), the coupled-REPLACE gain (H3, E4 vs E3) replicates with statistical
+significance — consistent with CIRCO. But unlike CIRCO, CIRR has enough statistical power to show E1, E3, and E4
+all significantly *underperform* E0 here; H1 and the grounded-delta part of H2 are not supported on CIRR, and the
+full P0 system (E4) does not yet match the TAPR baseline on this dataset. This is the more decisive of the two
+datasets given its much larger n.
